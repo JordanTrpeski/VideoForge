@@ -1,0 +1,98 @@
+{
+  "channel": {
+    "name": "The Engineering Brief",
+    "handle": "HowThingsWorkEng",
+    "niche": "engineering",
+    "target_length_seconds": 70,
+    "platforms": ["tiktok", "youtube_shorts"]
+  },
+
+  "script": {
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 1000,
+    "temperature": 0.7,
+    "word_count_target": 175,
+    "hook_style": "shocking_fact",
+    "images_to_generate": 8,
+    "language": "en",
+    "prompt_file": "prompts/script_prompt.txt"
+  },
+
+  "voice": {
+    "voice_id": "SET_IN_ENV",
+    "stability": 0.65,
+    "similarity_boost": 0.80,
+    "style_exaggeration": 0.20,
+    "chunk_by_section": true,
+    "output_format": "mp3_44100_128"
+  },
+
+  "visuals": {
+    "model": "leonardo-diffusion-xl",
+    "style_preset_id": "SET_AFTER_TESTING",
+    "negative_prompt": "text, watermarks, logos, faces, blurry, low quality, nsfw",
+    "width": 1080,
+    "height": 1920,
+    "guidance_scale": 7,
+    "num_inference_steps": 30,
+    "num_images": 1
+  },
+
+  "video": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "codec": "h264",
+    "bitrate": "8000k",
+    "transition_duration": 0.3,
+    "music_volume_db": -18,
+    "voice_volume_db": 0
+  },
+
+  "captions": {
+    "whisper_model": "base",
+    "font_file": "assets/fonts/Arial-Bold.ttf",
+    "font_size": 56,
+    "color": "white",
+    "stroke_color": "black",
+    "stroke_width": 3,
+    "position_y_percent": 0.72,
+    "max_chars_per_line": 32,
+    "max_words_per_line": 4
+  },
+
+  "thumbnail": {
+    "frame_capture_at_seconds": 5,
+    "overlay_template": "assets/thumbnail_template/overlay.png",
+    "width": 1080,
+    "height": 1920
+  },
+
+  "metadata": {
+    "prompt_file": "prompts/metadata_prompt.txt",
+    "hashtag_count": 10,
+    "description_max_chars": 150,
+    "youtube_description_max_chars": 500,
+    "default_hashtags": [
+      "#engineering",
+      "#howthingswork",
+      "#science",
+      "#learnontiktok",
+      "#education"
+    ]
+  },
+
+  "posting": {
+    "tiktok_post_times": ["07:00", "13:00", "19:00"],
+    "youtube_post_times": ["08:00", "14:00", "20:00"],
+    "timezone": "Europe/Skopje",
+    "batch_size_per_week": 5,
+    "auto_post_after_review": false
+  },
+
+  "logging": {
+    "level": "DEBUG",
+    "max_log_size_mb": 50,
+    "keep_logs_days": 30
+  }
+}

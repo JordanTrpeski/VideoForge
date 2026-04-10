@@ -1,0 +1,41 @@
+# VideoForge — Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Web framework
+flask>=3.0.0
+
+# Database (built-in sqlite3 — no install needed)
+
+# Video editing
+moviepy>=1.0.3
+
+# Speech-to-text
+openai-whisper>=20231117
+
+# Task scheduling
+apscheduler>=3.10.0
+
+# HTTP requests
+requests>=2.31.0
+
+# Audio processing
+pydub>=0.25.1
+
+# Image processing
+Pillow>=10.0.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Google / YouTube API
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.1.1
+google-auth-oauthlib>=1.1.0
+
+# Anthropic Claude API
+anthropic>=0.25.0
+
+# Additional utilities
+numpy>=1.24.0
+imageio>=2.31.0
+imageio-ffmpeg>=0.4.9

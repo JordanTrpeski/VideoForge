@@ -6,19 +6,34 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Environment
+# Environment — NEVER commit
 .env
 .env.*
 !.env.example
+env
+
+# API credentials — NEVER commit
+client_secrets.json
+client_secret_*.json
+token.json
+token_*.json
 
 # Logs
 *.log
 logs/
 
+# Generated output
+output/
+
+# SQLite database
+*.db
+
 # Dependencies
 node_modules/
 __pycache__/
 *.pyc
+*.pyo
+.Python
 
 # Build output
 dist/
