@@ -101,6 +101,47 @@ def cmd_generate_script(args) -> None:
         sys.exit(1)
 
 
+def cmd_generate_voice(args) -> None:
+    """
+    Run Stage 2: synthesise speech for an existing job's script.
+
+    Args:
+        args: Parsed argparse namespace with job_id attribute.
+    """
+    from database import init_db, get_job
+    from modules.voice_engine import generate_voice
+
+    config = load_config()
+    init_db()
+
+    job = get_job(args.job_id)
+    if not job:
+        print(f"ERROR: Job {args.job_id} not found. Run generate-script first.", file=sys.stderr)
+        sys.exit(1)
+
+    if not job.get('script_path'):
+        print(
+            f"ERROR: Job {args.job_id} has no script yet (status: {job['status']}). "
+            "Run generate-script first.",
+            file=sys.stderr
+        )
+        sys.exit(1)
+
+    print(f"\nJob {args.job_id} — generating voice for: '{job['topic']}'")
+
+    result = generate_voice(job_id=args.job_id, config=config)
+
+    if result.get('skipped'):
+        print(f"\nSKIPPED: {result['error']}")
+        print("Set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID in .env to enable voice generation.")
+    elif result['success']:
+        print(f"\nAudio saved to:   {result['output_path']}")
+        print(f"Duration:         {result['duration_seconds']}s")
+    else:
+        print(f"\nERROR: Voice generation failed — {result['error']}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_test_connections(args) -> None:
     """
     Run the API connection test suite.
@@ -203,6 +244,10 @@ def build_parser() -> argparse.ArgumentParser:
                           default=None,
                           help='Hook style override (default: value from config.json)')
 
+    # generate-voice
+    p_voice = subparsers.add_parser('generate-voice', help='Run Stage 2: synthesise speech')
+    p_voice.add_argument('job_id', type=str, help='Job ID e.g. 001')
+
     # status
     p_status = subparsers.add_parser('status', help='Show status of a single job')
     p_status.add_argument('job_id', type=str, help='Job ID e.g. 001')
@@ -216,6 +261,7 @@ def build_parser() -> argparse.ArgumentParser:
 COMMAND_MAP = {
     'test-connections': cmd_test_connections,
     'generate-script':  cmd_generate_script,
+    'generate-voice':   cmd_generate_voice,
     'status':           cmd_status,
     'list-jobs':        cmd_list_jobs,
 }
