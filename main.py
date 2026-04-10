@@ -250,6 +250,70 @@ def cmd_add_captions(args) -> None:
         sys.exit(1)
 
 
+def cmd_generate_metadata(args) -> None:
+    """
+    Run Stage 6: generate SEO metadata for an existing job.
+
+    Args:
+        args: Parsed argparse namespace with job_id attribute.
+    """
+    from database import init_db, get_job
+    from modules.metadata_engine import generate_metadata
+
+    config = load_config()
+    init_db()
+
+    job = get_job(args.job_id)
+    if not job:
+        print(f"ERROR: Job {args.job_id} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"\nJob {args.job_id} — generating metadata for: '{job['topic']}'")
+
+    result = generate_metadata(job_id=args.job_id, config=config)
+
+    if result['success']:
+        print(f"\nMetadata saved to: {result['output_path']}")
+        with open(result['output_path'], 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        print(f"  TikTok title:    {data['tiktok_title']}")
+        print(f"  YouTube title:   {data['youtube_title']}")
+        print(f"  Thumbnail text:  {data['thumbnail_text']}")
+        print(f"  Hashtags ({len(data['tiktok_hashtags'])}):    {' '.join(data['tiktok_hashtags'][:5])} ...")
+    else:
+        print(f"\nERROR: Metadata generation failed — {result['error']}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_generate_thumbnail(args) -> None:
+    """
+    Run Stage 6b: capture a frame and generate the thumbnail for an existing job.
+
+    Args:
+        args: Parsed argparse namespace with job_id attribute.
+    """
+    from database import init_db, get_job
+    from modules.thumbnail_engine import generate_thumbnail
+
+    config = load_config()
+    init_db()
+
+    job = get_job(args.job_id)
+    if not job:
+        print(f"ERROR: Job {args.job_id} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"\nJob {args.job_id} — generating thumbnail for: '{job['topic']}'")
+
+    result = generate_thumbnail(job_id=args.job_id, config=config)
+
+    if result['success']:
+        print(f"\nThumbnail saved to: {result['output_path']}")
+    else:
+        print(f"\nERROR: Thumbnail generation failed — {result['error']}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_test_connections(args) -> None:
     """
     Run the API connection test suite.
@@ -368,6 +432,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_captions = subparsers.add_parser('add-captions', help='Run Stage 5: burn captions into video')
     p_captions.add_argument('job_id', type=str, help='Job ID e.g. 001')
 
+    # generate-metadata
+    p_meta = subparsers.add_parser('generate-metadata', help='Run Stage 6: generate SEO metadata')
+    p_meta.add_argument('job_id', type=str, help='Job ID e.g. 001')
+
+    # generate-thumbnail
+    p_thumb = subparsers.add_parser('generate-thumbnail', help='Run Stage 6b: generate thumbnail')
+    p_thumb.add_argument('job_id', type=str, help='Job ID e.g. 001')
+
     # status
     p_status = subparsers.add_parser('status', help='Show status of a single job')
     p_status.add_argument('job_id', type=str, help='Job ID e.g. 001')
@@ -379,14 +451,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 COMMAND_MAP = {
-    'test-connections': cmd_test_connections,
-    'generate-script':  cmd_generate_script,
-    'generate-voice':   cmd_generate_voice,
-    'generate-images':  cmd_generate_images,
-    'assemble':         cmd_assemble,
-    'add-captions':     cmd_add_captions,
-    'status':           cmd_status,
-    'list-jobs':        cmd_list_jobs,
+    'test-connections':    cmd_test_connections,
+    'generate-script':     cmd_generate_script,
+    'generate-voice':      cmd_generate_voice,
+    'generate-images':     cmd_generate_images,
+    'assemble':            cmd_assemble,
+    'add-captions':        cmd_add_captions,
+    'generate-metadata':   cmd_generate_metadata,
+    'generate-thumbnail':  cmd_generate_thumbnail,
+    'status':              cmd_status,
+    'list-jobs':           cmd_list_jobs,
 }
 
 
