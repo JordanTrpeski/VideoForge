@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}Log viewer — VideoForge{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-5">
+    <h1 class="text-lg font-semibold text-white">Log viewer</h1>
+    <div class="flex items-center gap-3">
+        <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+            <input type="checkbox" id="auto-refresh" checked class="accent-blue-500">
+            Auto-refresh
+        </label>
+        <button onclick="loadLogs()" class="btn btn-ghost text-xs">Refresh now</button>
+    </div>
+</div>
+
+<!-- Filter controls -->
+<div class="card rounded-lg p-4 mb-4">
+    <div class="flex flex-wrap gap-4 items-end">
+        <!-- Level pills -->
+        <div>
+            <p class="text-xs text-slate-500 mb-2">Level</p>
+            <div class="flex gap-1.5">
+                {% for lvl in ['ALL','INFO','WARNING','ERROR','DEBUG'] %}
+                <button class="level-pill px-2.5 py-1 rounded-full text-xs font-medium transition-colors"
+                        data-level="{{ lvl }}" onclick="setLevel('{{ lvl }}')">{{ lvl }}</button>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Module -->
+        <div>
+            <label class="block text-xs text-slate-500 mb-2">Module</label>
+            <select id="module-select" onchange="loadLogs()" class="inp text-xs" style="width:180px">
+                <option value="main">main (combined)</option>
+                <option value="errors">errors only</option>
+                <option value="script_engine">script_engine</option>
+                <option value="voice_engine">voice_engine</option>
+                <option value="image_engine">image_engine</option>
+                <option value="assembly_engine">assembly_engine</option>
+                <option value="caption_engine">caption_engine</option>
+                <option value="thumbnail_engine">thumbnail_engine</option>
+                <option value="metadata_engine">metadata_engine</option>
+                <option value="upload_engine">upload_engine</option>
+                <option value="app">app</option>
+                <option value="database">database</option>
+            </select>
+        </div>
+
+        <!-- Job ID filter -->
+        <div>
+            <label class="block text-xs text-slate-500 mb-2">Job ID filter</label>
+            <input type="text" id="job-filter" placeholder="e.g. 001"
+                   oninput="loadLogs()" class="inp text-xs" style="width:100px">
+        </div>
+
+        <!-- Limit -->
+        <div>
+            <label class="block text-xs text-slate-500 mb-2">Lines</label>
+            <select id="limit-select" onchange="loadLogs()" class="inp text-xs" style="width:90px">
+                <option value="100">100</option>
+                <option value="200" selected>200</option>
+                <option value="500">500</option>
+            </select>
+        </div>
+    </div>
+</div>
+
+<!-- Log output -->
+<div class="card rounded-lg overflow-hidden">
+    <div class="flex items-center justify-between px-4 py-2 border-b" style="border-color:var(--border)">
+        <span id="log-count" class="text-xs" style="color:var(--muted)">Loading...</span>
+        <span class="text-xs" style="color:var(--muted)">Newest first</span>
+    </div>
+    <div id="log-output"
+         class="font-mono text-xs overflow-y-auto p-3 space-y-0.5"
+         style="background:var(--bg); max-height: 640px; min-height: 200px">
+        <div class="text-slate-600">Loading logs...</div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentLevel = 'ALL';
+let refreshTimer = null;
+
+// Pre-select job ID from URL param if present
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get('job_id')) {
+    document.getElementById('job-filter').value = urlParams.get('job_id');
+}
+
+function setLevel(lvl) {
+    currentLevel = lvl;
+    document.querySelectorAll('.level-pill').forEach(btn => {
+        const active = btn.dataset.level === lvl;
+        btn.style.background  = active ? '#1e3a5f' : '#1a2235';
+        btn.style.color       = active ? '#60a5fa' : '#6b7280';
+        btn.style.border      = active ? '1px solid #1e40af' : '1px solid var(--border)';
+    });
+    loadLogs();
+}
+setLevel('ALL');
+
+async function loadLogs() {
+    const module    = document.getElementById('module-select').value;
+    const jobFilter = document.getElementById('job-filter').value.trim();
+    const limit     = document.getElementById('limit-select').value;
+    const url = `/api/logs?module=${module}&level=${currentLevel}&job_id=${jobFilter}&limit=${limit}`;
+
+    try {
+        const res  = await fetch(url);
+        const data = await res.json();
+        const out  = document.getElementById('log-output');
+
+        document.getElementById('log-count').textContent =
+            `${data.count} line${data.count !== 1 ? 's' : ''}`;
+
+        if (!data.lines || data.lines.length === 0) {
+            out.innerHTML = '<div class="text-slate-600">No log entries match these filters.</div>';
+            return;
+        }
+
+        out.innerHTML = data.lines.map(line => `
+            <div class="log-${line.color} leading-5">
+                <span style="color:var(--muted)">${escHtml(line.ts)}</span>
+                <span class="text-slate-600 mx-1">|</span>
+                <span class="text-slate-500">${escHtml(line.module)}</span>
+                <span class="text-slate-700 mx-1">|</span>
+                <span>${escHtml(line.message)}</span>
+            </div>`
+        ).join('');
+    } catch(e) {
+        document.getElementById('log-output').innerHTML =
+            `<div class="text-red-400">Error loading logs: ${e.message}</div>`;
+    }
+}
+
+function escHtml(str) {
+    return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Auto-refresh
+const arToggle = document.getElementById('auto-refresh');
+function startRefresh() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    if (arToggle.checked) refreshTimer = setInterval(loadLogs, 3000);
+}
+arToggle.addEventListener('change', startRefresh);
+
+loadLogs();
+startRefresh();
+</script>
+{% endblock %}

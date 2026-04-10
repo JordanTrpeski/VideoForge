@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Overview — VideoForge{% endblock %}
+
+{% block content %}
+<h1 class="text-lg font-semibold text-white mb-5">Overview</h1>
+
+<!-- Stat strip -->
+<div class="grid grid-cols-4 gap-4 mb-6">
+    {% for label, value, color in [
+        ('Total videos',     stats.total,           'text-blue-400'),
+        ('Posted this week', stats.posted_this_week,'text-green-400'),
+        ('In queue',         stats.in_queue,         'text-slate-300'),
+        ('Awaiting review',  stats.awaiting_review,  'text-amber-400'),
+    ] %}
+    <div class="card rounded-lg p-4">
+        <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--muted)">{{ label }}</div>
+        <div class="text-3xl font-bold {{ color }}">{{ value }}</div>
+    </div>
+    {% endfor %}
+</div>
+
+<div class="grid grid-cols-2 gap-6">
+    <!-- Pipeline status -->
+    <div class="card rounded-lg p-5">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="font-semibold text-white text-sm">Pipeline status</h2>
+            <span id="ps-job-badge" class="badge badge-gray text-xs"></span>
+        </div>
+
+        <div id="ps-idle" class="text-center py-6" style="color:var(--muted)">
+            No pipeline running.
+            <a href="/jobs/new" class="text-blue-400 hover:underline ml-1">Start a job</a>
+        </div>
+
+        <div id="ps-running" class="hidden space-y-2">
+            {% for name in ['generate-script','generate-voice','generate-images','assemble','add-captions','generate-metadata','generate-thumbnail'] %}
+            <div class="stage-row flex items-center gap-3 py-1" data-stage="{{ name }}">
+                <div class="dot w-2.5 h-2.5 rounded-full flex-shrink-0 dot-pending"></div>
+                <span class="stage-label text-sm text-slate-300 w-28 flex-shrink-0">
+                    {{ {'generate-script':'Script','generate-voice':'Voice','generate-images':'Images',
+                        'assemble':'Assemble','add-captions':'Captions',
+                        'generate-metadata':'Metadata','generate-thumbnail':'Thumbnail'}[name] }}
+                </span>
+                <span class="stage-msg text-xs" style="color:var(--muted)"></span>
+                <span class="stage-elapsed text-xs ml-auto" style="color:var(--muted)"></span>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div id="ps-error" class="hidden mt-3 text-xs text-red-400 bg-red-950 rounded p-2"></div>
+    </div>
+
+    <!-- Review gate -->
+    <div>
+        {% if review_jobs %}
+        {% for job in review_jobs %}
+        <div class="card rounded-lg p-5 mb-4">
+            <div class="flex items-center gap-2 mb-3">
+                <span class="badge badge-amber">REVIEW</span>
+                <span class="font-mono text-xs text-slate-400">JOB {{ job.id }}</span>
+            </div>
+            <p class="text-white font-medium mb-1 leading-snug">{{ job.topic }}</p>
+            <p class="text-xs mb-4" style="color:var(--muted)">
+                {{ job.bucket or '—' }} &middot; {{ job.hook_style or '—' }}
+                {% if job.word_count %}&middot; {{ job.word_count }} words{% endif %}
+                {% if job.duration_seconds %}&middot; {{ "%.0f"|format(job.duration_seconds) }}s{% endif %}
+            </p>
+            <div class="flex gap-2">
+                <form action="/jobs/{{ job.id }}/approve" method="post">
+                    <button class="btn btn-success text-xs">Approve &amp; upload</button>
+                </form>
+                <form action="/jobs/{{ job.id }}/reject" method="post"
+                      onsubmit="return confirm('Reject job {{ job.id }}? All output files will be deleted and it will requeue from scratch.')">
+                    <button class="btn btn-danger text-xs">Reject &amp; redo</button>
+                </form>
+                <a href="/jobs/{{ job.id }}" class="btn btn-ghost text-xs">View details</a>
+            </div>
+        </div>
+        {% endfor %}
+        {% else %}
+        <div class="card rounded-lg p-5">
+            <h2 class="font-semibold text-white text-sm mb-3">Review gate</h2>
+            <div class="text-center py-4" style="color:var(--muted)">
+                No jobs awaiting review.
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const STAGE_ORDER = ['generate-script','generate-voice','generate-images','assemble',
+                     'add-captions','generate-metadata','generate-thumbnail'];
+let pollTimer = null;
+
+function dotClass(status) {
+    return { pending:'dot-pending', running:'dot-running', done:'dot-done',
+             skipped:'dot-skipped', failed:'dot-failed' }[status] || 'dot-pending';
+}
+
+async function pollStatus() {
+    try {
+        const res = await fetch('/api/pipeline-status');
+        const data = await res.json();
+
+        const idleEl    = document.getElementById('ps-idle');
+        const runningEl = document.getElementById('ps-running');
+        const errEl     = document.getElementById('ps-error');
+        const badge     = document.getElementById('ps-job-badge');
+
+        const anyActivity = data.running || (data.job_id && data.stages &&
+            Object.values(data.stages).some(s => s.status !== 'pending'));
+
+        if (anyActivity) {
+            idleEl.classList.add('hidden');
+            runningEl.classList.remove('hidden');
+            badge.textContent = data.job_id ? `JOB ${data.job_id}` : '';
+            badge.className = `badge ${data.running ? 'badge-blue' : 'badge-gray'} text-xs`;
+
+            data.stages.forEach(s => {
+                const row = document.querySelector(`.stage-row[data-stage="${s.name}"]`);
+                if (!row) return;
+                const dot = row.querySelector('.dot');
+                dot.className = `dot w-2.5 h-2.5 rounded-full flex-shrink-0 ${dotClass(s.status)}`;
+                row.querySelector('.stage-msg').textContent = s.message || '';
+                row.querySelector('.stage-elapsed').textContent = s.elapsed ? `${s.elapsed}s` : '';
+            });
+
+            if (data.error) {
+                errEl.textContent = `Error: ${data.error}`;
+                errEl.classList.remove('hidden');
+            } else {
+                errEl.classList.add('hidden');
+            }
+        } else {
+            idleEl.classList.remove('hidden');
+            runningEl.classList.add('hidden');
+            badge.textContent = '';
+        }
+    } catch(e) { /* silent */ }
+}
+
+pollStatus();
+setInterval(pollStatus, 5000);
+</script>
+{% endblock %}

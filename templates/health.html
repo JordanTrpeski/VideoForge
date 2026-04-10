@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}API health — VideoForge{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-5">
+    <h1 class="text-lg font-semibold text-white">API health</h1>
+    <button id="test-all-btn" onclick="testAll()" class="btn btn-primary text-xs">
+        Run full connection test
+    </button>
+</div>
+
+<p class="text-xs mb-5" style="color:var(--muted)">
+    Check this page before starting a Sunday batch session. A failed TikTok token discovered mid-batch wastes hours.
+</p>
+
+<!-- API status table -->
+<div class="card rounded-lg overflow-hidden mb-6">
+    <table class="w-full tbl">
+        <thead>
+            <tr>
+                <th class="text-left w-32">Service</th>
+                <th class="text-left w-24">Status</th>
+                <th class="text-left">Details</th>
+                <th class="text-right w-24">Latency</th>
+                <th class="text-right w-28"></th>
+            </tr>
+        </thead>
+        <tbody id="health-table">
+            {% for svc in ['claude','elevenlabs','leonardo','pexels','youtube','tiktok'] %}
+            <tr id="row-{{ svc }}">
+                <td class="text-white font-medium text-xs">
+                    {{ {'claude':'Claude (Anthropic)','elevenlabs':'ElevenLabs',
+                        'leonardo':'Leonardo.AI','pexels':'Pexels',
+                        'youtube':'YouTube API','tiktok':'TikTok API'}[svc] }}
+                </td>
+                <td><span class="badge badge-gray status-badge">—</span></td>
+                <td class="text-slate-400 text-xs detail-cell">—</td>
+                <td class="text-right text-slate-500 text-xs latency-cell">—</td>
+                <td class="text-right">
+                    <button class="btn btn-ghost text-xs"
+                            onclick="testSingle('{{ svc }}')">Test</button>
+                    {% if svc == 'tiktok' %}
+                    <form action="/health/reauth/tiktok" method="post" class="inline ml-1">
+                        <button type="submit" class="btn btn-warning text-xs"
+                                onclick="return confirm('Open TikTok OAuth flow in browser?')">
+                            Re-auth
+                        </button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Full test output -->
+<div id="full-test-panel" class="card rounded-lg p-5 hidden">
+    <h2 class="font-semibold text-white text-sm mb-3">Connection test output</h2>
+    <pre id="full-test-output"
+         class="font-mono text-xs leading-relaxed max-h-96 overflow-y-auto p-3 rounded text-slate-300"
+         style="background:var(--bg); border:1px solid var(--border)"></pre>
+</div>
+
+<!-- Setup instructions -->
+<div class="card rounded-lg p-5">
+    <h2 class="font-semibold text-white text-sm mb-3">Setup reminders</h2>
+    <div class="grid grid-cols-2 gap-4 text-xs" style="color:var(--muted)">
+        <div>
+            <p class="text-slate-400 font-medium mb-1">YouTube activation:</p>
+            <ol class="list-decimal ml-4 space-y-1">
+                <li>Rename <span class="font-mono text-blue-400">client_secret_*.json</span> to <span class="font-mono text-blue-400">client_secrets.json</span></li>
+                <li>Or set <span class="font-mono text-blue-400">YOUTUBE_CLIENT_SECRETS_FILE=client_secret_*.json</span> in .env</li>
+                <li>Run <span class="font-mono text-blue-400">python main.py upload 001</span> once — a browser window will open for OAuth</li>
+                <li>Token is saved to token.json and reused automatically</li>
+            </ol>
+        </div>
+        <div>
+            <p class="text-slate-400 font-medium mb-1">TikTok activation:</p>
+            <ol class="list-decimal ml-4 space-y-1">
+                <li>Apply at <span class="font-mono text-blue-400">developers.tiktok.com</span></li>
+                <li>Create an app with Content Posting API scope</li>
+                <li>Set <span class="font-mono text-blue-400">TIKTOK_CLIENT_KEY</span> and <span class="font-mono text-blue-400">TIKTOK_CLIENT_SECRET</span> in .env</li>
+                <li>Click Re-auth above to complete OAuth (token expires periodically)</li>
+            </ol>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SVC_NAMES = {
+    claude: 'Claude (Anthropic)', elevenlabs: 'ElevenLabs',
+    leonardo: 'Leonardo.AI', pexels: 'Pexels',
+    youtube: 'YouTube API', tiktok: 'TikTok API',
+};
+
+function badgeClass(status) {
+    return {ok:'badge-green', warning:'badge-amber', error:'badge-red',
+            no_key:'badge-gray'}[status] || 'badge-gray';
+}
+function badgeLabel(status) {
+    return {ok:'OK', warning:'Warning', error:'Error', no_key:'Not configured'}[status] || status;
+}
+
+function applyResult(svc, data) {
+    const row = document.getElementById(`row-${svc}`);
+    if (!row) return;
+    const badge = row.querySelector('.status-badge');
+    badge.className = `badge ${badgeClass(data.status)} status-badge`;
+    badge.textContent = badgeLabel(data.status);
+    row.querySelector('.detail-cell').textContent  = data.label   || '—';
+    row.querySelector('.latency-cell').textContent = data.latency_ms != null ? `${data.latency_ms} ms` : '—';
+}
+
+async function testSingle(svc) {
+    const row = document.getElementById(`row-${svc}`);
+    row.querySelector('.status-badge').textContent = 'Testing...';
+    try {
+        const res  = await fetch('/api/health');
+        const data = await res.json();
+        if (data[svc]) applyResult(svc, data[svc]);
+    } catch(e) {
+        applyResult(svc, {status:'error', label: e.message, latency_ms: null});
+    }
+}
+
+async function testAll() {
+    const btn    = document.getElementById('test-all-btn');
+    const panel  = document.getElementById('full-test-panel');
+    const output = document.getElementById('full-test-output');
+
+    btn.textContent = 'Testing...';
+    btn.disabled    = true;
+    panel.classList.remove('hidden');
+    output.textContent = 'Running connection tests...';
+
+    try {
+        const res  = await fetch('/api/health');
+        const data = await res.json();
+
+        let text = 'Connection test results:\n\n';
+        for (const [svc, info] of Object.entries(data)) {
+            applyResult(svc, info);
+            const icon = info.status === 'ok' ? 'PASS' : info.status === 'no_key' ? 'SKIP' : 'FAIL';
+            text += `[${icon}] ${SVC_NAMES[svc] || svc}: ${info.label}`;
+            if (info.latency_ms) text += ` (${info.latency_ms} ms)`;
+            text += '\n';
+        }
+        output.textContent = text;
+    } catch(e) {
+        output.textContent = `Error: ${e.message}`;
+    }
+
+    btn.textContent = 'Run full connection test';
+    btn.disabled    = false;
+}
+
+// Load on page open
+testAll();
+</script>
+{% endblock %}

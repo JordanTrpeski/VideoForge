@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}New job — VideoForge{% endblock %}
+
+{% block content %}
+<h1 class="text-lg font-semibold text-white mb-5">New job</h1>
+
+<div class="grid grid-cols-2 gap-6">
+    <!-- Single job -->
+    <div class="card rounded-lg p-5">
+        <h2 class="font-semibold text-white text-sm mb-4">Add a single job</h2>
+        <form method="post" action="/jobs/new" class="space-y-4">
+            <!-- Topic -->
+            <div>
+                <label class="block text-xs text-slate-400 mb-1">Topic <span class="text-red-400">*</span></label>
+                <input type="text" name="topic" class="inp" required
+                       placeholder="e.g. Why phone chargers get warm">
+                <p class="text-xs mt-1" style="color:var(--muted)">Write it as a question or curiosity hook — the script prompt will handle structure.</p>
+            </div>
+
+            <!-- Bucket -->
+            <div>
+                <label class="block text-xs text-slate-400 mb-1">Bucket</label>
+                <select name="bucket" class="inp">
+                    <option value="elec">Electrical</option>
+                    <option value="infra">Infrastructure</option>
+                    <option value="vehicle">Vehicles</option>
+                    <option value="flaw">The Flaw (engineering failures)</option>
+                </select>
+            </div>
+
+            <!-- Hook style -->
+            <div>
+                <label class="block text-xs text-slate-400 mb-1">Hook style</label>
+                <select name="hook" class="inp">
+                    <option value="">Use config default ({{ config.get('script',{}).get('hook_style','shocking_fact') }})</option>
+                    <option value="shocking_fact">Shocking fact</option>
+                    <option value="wrong_assumption">Wrong assumption</option>
+                    <option value="nobody_talks">Nobody talks about this</option>
+                </select>
+            </div>
+
+            <!-- Run mode -->
+            <div>
+                <label class="block text-xs text-slate-400 mb-1">Run mode</label>
+                <select name="run_mode" class="inp">
+                    <option value="queue">Add to queue only</option>
+                    <option value="now">Run full pipeline now</option>
+                    <option value="script_only">Script only — pause for review</option>
+                </select>
+                <p class="text-xs mt-1" style="color:var(--muted)">"Run now" starts immediately in the background. "Script only" stops after Stage 1 so you can review the script before continuing.</p>
+            </div>
+
+            <button type="submit" class="btn btn-primary w-full justify-center">Add job</button>
+        </form>
+    </div>
+
+    <!-- Bulk add -->
+    <div class="card rounded-lg p-5">
+        <h2 class="font-semibold text-white text-sm mb-4">Bulk add</h2>
+        <form method="post" action="/jobs/new" class="space-y-4">
+            <div>
+                <label class="block text-xs text-slate-400 mb-1">Topics — one per line</label>
+                <textarea name="bulk_topics" rows="8" class="inp font-mono text-xs"
+                          placeholder="Why phone chargers get warm&#10;How traffic lights decide who goes first&#10;What happens inside a circuit breaker"></textarea>
+                <p class="text-xs mt-1" style="color:var(--muted)">All topics will use the same bucket and hook style below.</p>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Bucket</label>
+                    <select name="bucket" class="inp">
+                        <option value="elec">Electrical</option>
+                        <option value="infra">Infrastructure</option>
+                        <option value="vehicle">Vehicles</option>
+                        <option value="flaw">The Flaw</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Hook style</label>
+                    <select name="hook" class="inp">
+                        <option value="">Config default</option>
+                        <option value="shocking_fact">Shocking fact</option>
+                        <option value="wrong_assumption">Wrong assumption</option>
+                        <option value="nobody_talks">Nobody talks about this</option>
+                    </select>
+                </div>
+            </div>
+
+            <input type="hidden" name="run_mode" value="queue">
+            <button type="submit" class="btn btn-primary w-full justify-center">Add all to queue</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

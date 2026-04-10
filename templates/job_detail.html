@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}Job {{ job.id }} — VideoForge{% endblock %}
+
+{% block content %}
+<div class="flex items-center gap-3 mb-5">
+    <a href="/jobs" class="text-slate-500 hover:text-slate-300 text-xs">&larr; Job queue</a>
+    <span class="text-slate-700">/</span>
+    <span class="font-mono text-slate-300">JOB {{ job.id }}</span>
+    {% set sc = status_color(job.status) %}
+    <span class="badge badge-{{ sc }}">{{ job.status }}</span>
+</div>
+
+<!-- Header info -->
+<div class="card rounded-lg p-5 mb-5">
+    <h1 class="text-base font-semibold text-white mb-3 leading-snug">{{ job.topic }}</h1>
+    <div class="flex flex-wrap gap-4 text-xs" style="color:var(--muted)">
+        <span><span class="text-slate-400">Bucket:</span> {{ job.bucket or '—' }}</span>
+        <span><span class="text-slate-400">Hook:</span> {{ job.hook_style or '—' }}</span>
+        {% if job.word_count %}<span><span class="text-slate-400">Words:</span> {{ job.word_count }}</span>{% endif %}
+        {% if job.duration_seconds %}<span><span class="text-slate-400">Duration:</span> {{ "%.1f"|format(job.duration_seconds) }}s</span>{% endif %}
+        <span><span class="text-slate-400">Created:</span> {{ (job.created_at or '')[:16] }}</span>
+    </div>
+    {% if job.error_message %}
+    <div class="mt-3 p-3 rounded bg-red-950 border border-red-900 text-xs">
+        <span class="text-red-400 font-semibold">{{ job.error_module }}:</span>
+        <span class="text-red-300 ml-1">{{ job.error_message }}</span>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Action buttons -->
+<div class="flex gap-2 mb-6">
+    {% if job.status == 'review' %}
+    <form action="/jobs/{{ job.id }}/approve" method="post">
+        <button class="btn btn-success text-xs">Approve &amp; upload</button>
+    </form>
+    <form action="/jobs/{{ job.id }}/reject" method="post"
+          onsubmit="return confirm('Reject and clear all output files?')">
+        <button class="btn btn-danger text-xs">Reject &amp; redo</button>
+    </form>
+    {% endif %}
+    {% if job.status == 'failed' %}
+    <form action="/jobs/{{ job.id }}/retry" method="post">
+        <button class="btn btn-warning text-xs">Retry from failed stage</button>
+    </form>
+    {% endif %}
+    {% if job.youtube_url %}
+    <a href="{{ job.youtube_url }}" target="_blank" class="btn btn-ghost text-xs">YouTube &rarr;</a>
+    {% endif %}
+    {% if job.tiktok_url %}
+    <a href="{{ job.tiktok_url }}" target="_blank" class="btn btn-ghost text-xs">TikTok &rarr;</a>
+    {% endif %}
+</div>
+
+<div class="grid grid-cols-2 gap-5 mb-5">
+    <!-- Script preview -->
+    {% if script_data %}
+    <div class="card rounded-lg p-5">
+        <h2 class="font-semibold text-white text-sm mb-3">Script</h2>
+        <div class="space-y-3">
+            <div>
+                <p class="text-xs uppercase tracking-wider mb-1" style="color:var(--muted)">Narration</p>
+                <p class="text-slate-300 text-xs leading-relaxed">{{ script_data.narration }}</p>
+            </div>
+            {% if script_data.get('sections') %}
+            <div>
+                <p class="text-xs uppercase tracking-wider mb-1" style="color:var(--muted)">Sections</p>
+                {% for key, text in script_data.sections.items() %}
+                <div class="mb-1">
+                    <span class="text-blue-400 text-xs font-medium">{{ key }}:</span>
+                    <span class="text-slate-400 text-xs ml-1">{{ text[:120] }}{% if text|length > 120 %}&hellip;{% endif %}</span>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Visual brief -->
+    <div class="card rounded-lg p-5">
+        <h2 class="font-semibold text-white text-sm mb-3">Visual brief</h2>
+        <ol class="space-y-2">
+            {% for prompt in (script_data.visual_brief or []) %}
+            <li class="flex gap-2 text-xs">
+                <span class="text-blue-500 font-mono flex-shrink-0 w-5">{{ loop.index }}.</span>
+                <span class="text-slate-300 leading-relaxed">{{ prompt }}</span>
+            </li>
+            {% endfor %}
+        </ol>
+    </div>
+    {% else %}
+    <div class="card rounded-lg p-5">
+        <h2 class="font-semibold text-white text-sm mb-3">Script</h2>
+        <p class="text-xs" style="color:var(--muted)">Not generated yet.</p>
+    </div>
+    <div class="card rounded-lg p-5">
+        <h2 class="font-semibold text-white text-sm mb-3">Visual brief</h2>
+        <p class="text-xs" style="color:var(--muted)">Not generated yet.</p>
+    </div>
+    {% endif %}
+</div>
+
+<div class="grid grid-cols-2 gap-5 mb-5">
+    <!-- Metadata -->
+    {% if meta_data %}
+    <div class="card rounded-lg p-5">
+        <h2 class="font-semibold text-white text-sm mb-3">Metadata</h2>
+        <div class="space-y-2 text-xs">
+            <div><span class="text-slate-500">TikTok title:</span> <span class="text-white ml-1">{{ meta_data.tiktok_title }}</span></div>
+            <div><span class="text-slate-500">YouTube title:</span> <span class="text-white ml-1">{{ meta_data.youtube_title }}</span></div>
+            <div><span class="text-slate-500">Thumbnail text:</span> <span class="font-bold text-amber-300 ml-1">{{ meta_data.thumbnail_text }}</span></div>
+            <div>
+                <span class="text-slate-500">Hashtags:</span>
+                <span class="text-blue-400 ml-1">{{ meta_data.tiktok_hashtags | join(' ') }}</span>
+            </div>
+            {% if meta_data.youtube_description %}
+            <div>
+                <span class="text-slate-500 block mb-1">YouTube description:</span>
+                <p class="text-slate-400 text-xs leading-relaxed">{{ meta_data.youtube_description[:300] }}{% if meta_data.youtube_description|length > 300 %}&hellip;{% endif %}</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% else %}
+    <div class="card rounded-lg p-5">
+        <h2 class="font-semibold text-white text-sm mb-3">Metadata</h2>
+        <p class="text-xs" style="color:var(--muted)">Not generated yet.</p>
+    </div>
+    {% endif %}
+
+    <!-- Thumbnail -->
+    <div class="card rounded-lg p-5">
+        <h2 class="font-semibold text-white text-sm mb-3">Thumbnail</h2>
+        {% if thumbnail_url %}
+        <img src="{{ thumbnail_url }}" alt="Thumbnail"
+             class="rounded w-full max-w-xs mx-auto" style="max-height:320px; object-fit:cover">
+        {% else %}
+        <p class="text-xs" style="color:var(--muted)">Not generated yet.</p>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Video player -->
+{% if video_url %}
+<div class="card rounded-lg p-5 mb-5">
+    <h2 class="font-semibold text-white text-sm mb-3">Video preview</h2>
+    <video controls class="rounded mx-auto block" style="max-height:480px; max-width:270px">
+        <source src="{{ video_url }}" type="video/mp4">
+        Your browser does not support the video tag.
+    </video>
+</div>
+{% endif %}
+
+<!-- Log output -->
+<div class="card rounded-lg p-5">
+    <h2 class="font-semibold text-white text-sm mb-3">Log output for this job</h2>
+    {% if log_lines %}
+    <div class="font-mono text-xs space-y-0.5 max-h-72 overflow-y-auto" style="background:var(--bg); padding:8px; border-radius:6px">
+        {% for line in log_lines %}
+        <div class="log-{{ line.color }} leading-5">
+            <span style="color:var(--muted)">{{ line.ts }}</span>
+            <span class="ml-2">{{ line.message }}</span>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-xs" style="color:var(--muted)">No log entries for this job yet.</p>
+    {% endif %}
+    <a href="/logs?job_id={{ job.id }}" class="text-blue-400 text-xs hover:underline mt-2 inline-block">
+        Open full log viewer &rarr;
+    </a>
+</div>
+{% endblock %}

@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Job queue — VideoForge{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-5">
+    <h1 class="text-lg font-semibold text-white">Job queue</h1>
+    <a href="/jobs/new" class="btn btn-primary text-xs">+ New job</a>
+</div>
+
+<!-- Filter pills -->
+<div class="flex gap-2 mb-5 flex-wrap">
+    {% for pill_status, pill_label in [
+        ('all',      'All'),
+        ('queued',   'Queued'),
+        ('scripting','Running'),
+        ('review',   'Review'),
+        ('posted',   'Posted'),
+        ('failed',   'Failed'),
+    ] %}
+    <a href="/jobs?status={{ pill_status }}"
+       class="px-3 py-1 rounded-full text-xs font-medium transition-colors
+              {% if status_filter == pill_status %}
+                  bg-blue-700 text-white
+              {% else %}
+                  bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700
+              {% endif %}">
+        {{ pill_label }}
+        {% if pill_status == 'all' %}
+            ({{ total }})
+        {% elif counts.get(pill_status) %}
+            ({{ counts[pill_status] }})
+        {% elif pill_status == 'scripting' %}
+            ({{ (counts.get('scripting',0) + counts.get('voiced',0) + counts.get('imaging',0) +
+                 counts.get('assembling',0) + counts.get('captioning',0) + counts.get('metadata',0) +
+                 counts.get('uploading',0)) }})
+        {% endif %}
+    </a>
+    {% endfor %}
+</div>
+
+<!-- Table -->
+{% if jobs %}
+<div class="card rounded-lg overflow-hidden">
+    <table class="w-full tbl">
+        <thead>
+            <tr>
+                <th class="text-left w-14">ID</th>
+                <th class="text-left">Topic</th>
+                <th class="text-left w-24">Bucket</th>
+                <th class="text-left w-28">Status</th>
+                <th class="text-left w-36">Created</th>
+                <th class="text-left w-16"></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for job in jobs %}
+            <tr class="cursor-pointer" onclick="location.href='/jobs/{{ job.id }}'">
+                <td><span class="font-mono text-slate-400 text-xs">{{ job.id }}</span></td>
+                <td class="text-white max-w-xs">
+                    <span title="{{ job.topic }}">
+                        {{ job.topic[:60] }}{% if job.topic|length > 60 %}&hellip;{% endif %}
+                    </span>
+                    {% if job.error_message %}
+                    <div class="text-xs text-red-400 mt-0.5">
+                        {{ job.error_module }}: {{ job.error_message[:80] }}
+                    </div>
+                    {% endif %}
+                </td>
+                <td class="text-slate-400 text-xs">{{ job.bucket or '—' }}</td>
+                <td>
+                    {% set sc = status_color(job.status) %}
+                    <span class="badge badge-{{ sc }}">{{ job.status }}</span>
+                </td>
+                <td class="text-slate-500 text-xs font-mono">
+                    {{ (job.created_at or '')[:16] }}
+                </td>
+                <td>
+                    <a href="/jobs/{{ job.id }}"
+                       class="text-blue-400 text-xs hover:underline"
+                       onclick="event.stopPropagation()">View</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="card rounded-lg p-10 text-center" style="color:var(--muted)">
+    No jobs {% if status_filter != 'all' %}with status "{{ status_filter }}"{% endif %}.
+    <a href="/jobs/new" class="text-blue-400 hover:underline ml-1">Create one</a>
+</div>
+{% endif %}
+{% endblock %}

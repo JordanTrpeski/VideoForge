@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block title %}Analytics — VideoForge{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-5">
+    <h1 class="text-lg font-semibold text-white">Analytics</h1>
+    <button id="refresh-btn" onclick="loadAnalytics()" class="btn btn-ghost text-xs">Refresh analytics</button>
+</div>
+
+<!-- Stat strip -->
+<div class="grid grid-cols-4 gap-4 mb-6">
+    <div class="card rounded-lg p-4">
+        <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--muted)">Total views</div>
+        <div id="stat-views" class="text-3xl font-bold text-blue-400">—</div>
+    </div>
+    <div class="card rounded-lg p-4">
+        <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--muted)">Total likes</div>
+        <div id="stat-likes" class="text-3xl font-bold text-green-400">—</div>
+    </div>
+    <div class="card rounded-lg p-4">
+        <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--muted)">Videos posted</div>
+        <div id="stat-posted" class="text-3xl font-bold text-slate-300">—</div>
+    </div>
+    <div class="card rounded-lg p-4">
+        <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--muted)">Analytics last pulled</div>
+        <div id="stat-pulled" class="text-sm text-slate-400 mt-1">Phase 10 (pending)</div>
+    </div>
+</div>
+
+<div class="grid grid-cols-2 gap-6 mb-6">
+    <!-- Top videos -->
+    <div class="card rounded-lg overflow-hidden">
+        <div class="px-5 py-3 border-b" style="border-color:var(--border)">
+            <h2 class="font-semibold text-white text-sm">Top performing videos</h2>
+        </div>
+        <div id="top-videos">
+            <table class="w-full tbl">
+                <thead>
+                    <tr>
+                        <th class="text-left">#</th>
+                        <th class="text-left">Topic</th>
+                        <th class="text-right">Views</th>
+                        <th class="text-right">Likes</th>
+                    </tr>
+                </thead>
+                <tbody id="top-videos-body">
+                    <tr><td colspan="4" class="text-center py-6" style="color:var(--muted)">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Bucket performance chart -->
+    <div class="card rounded-lg p-5">
+        <h2 class="font-semibold text-white text-sm mb-4">Average views by content bucket</h2>
+        <div style="position:relative; height:240px">
+            <canvas id="bucket-chart"></canvas>
+        </div>
+        <p id="chart-empty" class="text-center text-xs mt-4 hidden" style="color:var(--muted)">
+            No posted videos yet — data will appear once videos are live.
+        </p>
+    </div>
+</div>
+
+<!-- Platform comparison -->
+<div class="card rounded-lg overflow-hidden">
+    <div class="px-5 py-3 border-b" style="border-color:var(--border)">
+        <h2 class="font-semibold text-white text-sm">Platform comparison</h2>
+    </div>
+    <div id="platform-compare" class="p-5">
+        <p class="text-xs" style="color:var(--muted)">
+            Platform breakdown data is populated after the analytics engine runs (Phase 10).
+            Use the YouTube Studio and TikTok analytics dashboards directly until then.
+        </p>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let bucketChart = null;
+
+const BUCKET_LABELS = {
+    'elec':    'Electrical',
+    'infra':   'Infrastructure',
+    'vehicle': 'Vehicles',
+    'flaw':    'The Flaw',
+};
+const BUCKET_COLORS = ['#3b82f6','#22c55e','#f59e0b','#ef4444'];
+
+async function loadAnalytics() {
+    try {
+        const res  = await fetch('/api/analytics');
+        const data = await res.json();
+
+        if (data.error) return;
+
+        document.getElementById('stat-views').textContent  = fmtNum(data.total_views);
+        document.getElementById('stat-likes').textContent  = fmtNum(data.total_likes);
+        document.getElementById('stat-posted').textContent = data.top_videos ? data.top_videos.length : '0';
+
+        // Top videos table
+        const tbody = document.getElementById('top-videos-body');
+        if (data.top_videos && data.top_videos.length) {
+            tbody.innerHTML = data.top_videos.map((v, i) => `
+                <tr>
+                    <td class="text-slate-500 text-xs">${i + 1}</td>
+                    <td class="text-white text-xs max-w-xs">
+                        <span title="${escHtml(v.topic)}">${escHtml(v.topic.substring(0,50))}${v.topic.length>50?'…':''}</span>
+                        <span class="text-slate-600 ml-1 text-xs">${v.bucket||''}</span>
+                    </td>
+                    <td class="text-right text-blue-400 text-xs">${fmtNum(v.total_views)}</td>
+                    <td class="text-right text-green-400 text-xs">${fmtNum(v.total_likes)}</td>
+                </tr>
+            `).join('');
+        } else {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-center py-8" style="color:var(--muted)">No posted videos yet.</td></tr>';
+        }
+
+        // Bucket chart
+        if (data.by_bucket && data.by_bucket.length) {
+            document.getElementById('chart-empty').classList.add('hidden');
+            const labels = data.by_bucket.map(b => BUCKET_LABELS[b.bucket] || b.bucket);
+            const values = data.by_bucket.map(b => Math.round(b.avg_views));
+
+            if (bucketChart) bucketChart.destroy();
+            const ctx = document.getElementById('bucket-chart').getContext('2d');
+            bucketChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Avg views',
+                        data: values,
+                        backgroundColor: BUCKET_COLORS.slice(0, labels.length),
+                        borderRadius: 4,
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { ticks: { color: '#6b7280' }, grid: { color: '#1a2235' } },
+                        y: { ticks: { color: '#6b7280' }, grid: { color: '#1a2235' },
+                             beginAtZero: true }
+                    }
+                }
+            });
+        } else {
+            document.getElementById('chart-empty').classList.remove('hidden');
+        }
+
+    } catch(e) { /* silent */ }
+}
+
+function fmtNum(n) {
+    if (!n) return '0';
+    if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
+    if (n >= 1000)    return (n/1000).toFixed(1) + 'K';
+    return String(n);
+}
+function escHtml(s) {
+    return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+loadAnalytics();
+</script>
+{% endblock %}

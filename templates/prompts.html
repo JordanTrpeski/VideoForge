@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Prompt editor — VideoForge{% endblock %}
+
+{% block content %}
+<h1 class="text-lg font-semibold text-white mb-5">Prompt editor</h1>
+
+<div class="grid grid-cols-2 gap-6 mb-6">
+    <!-- Script prompt -->
+    <div class="card rounded-lg overflow-hidden">
+        <div class="flex items-center justify-between px-5 py-3 border-b" style="border-color:var(--border)">
+            <h2 class="font-semibold text-white text-sm">Script prompt</h2>
+            <span class="text-xs" style="color:var(--muted)">prompts/script_prompt.txt</span>
+        </div>
+        <div class="p-5">
+            <form method="post" action="/prompts/script">
+                <textarea name="content" rows="18"
+                          class="inp font-mono text-xs leading-relaxed w-full mb-3"
+                          id="script-prompt-ta">{{ script_prompt }}</textarea>
+                <div class="flex gap-2">
+                    <button type="submit" class="btn btn-primary text-xs">Save script prompt</button>
+                    <button type="button" class="btn btn-ghost text-xs"
+                            onclick="testPrompt('script', document.getElementById('script-prompt-ta').value)">
+                        Test with last topic
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Metadata prompt -->
+    <div class="card rounded-lg overflow-hidden">
+        <div class="flex items-center justify-between px-5 py-3 border-b" style="border-color:var(--border)">
+            <h2 class="font-semibold text-white text-sm">Metadata prompt</h2>
+            <span class="text-xs" style="color:var(--muted)">prompts/metadata_prompt.txt</span>
+        </div>
+        <div class="p-5">
+            <form method="post" action="/prompts/metadata">
+                <textarea name="content" rows="18"
+                          class="inp font-mono text-xs leading-relaxed w-full mb-3"
+                          id="meta-prompt-ta">{{ meta_prompt }}</textarea>
+                <div class="flex gap-2">
+                    <button type="submit" class="btn btn-primary text-xs">Save metadata prompt</button>
+                    <button type="button" class="btn btn-ghost text-xs"
+                            onclick="testPrompt('metadata', document.getElementById('meta-prompt-ta').value)">
+                        Test with last topic
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Test result panel -->
+<div id="test-panel" class="card rounded-lg p-5 mb-6 hidden">
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="font-semibold text-white text-sm">Test result</h2>
+        <div id="test-meta" class="text-xs" style="color:var(--muted)"></div>
+    </div>
+    <pre id="test-output" class="text-xs text-slate-300 leading-relaxed max-h-72 overflow-y-auto p-3 rounded"
+         style="background:var(--bg); border:1px solid var(--border)"></pre>
+</div>
+
+<!-- Variable reference -->
+<div class="card rounded-lg overflow-hidden">
+    <div class="px-5 py-3 border-b" style="border-color:var(--border)">
+        <h2 class="font-semibold text-white text-sm">Prompt variable reference</h2>
+    </div>
+    <table class="w-full tbl">
+        <thead>
+            <tr>
+                <th class="text-left">Variable</th>
+                <th class="text-left">Current value</th>
+                <th class="text-left">Used in</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% set sc = config.get('script', {}) %}
+            {% set mt = config.get('metadata', {}) %}
+            {% set ch = config.get('channel', {}) %}
+            {% for var, val, used in [
+                ('{topic}',                        '(from job)',                                     'both'),
+                ('{bucket}',                       '(from job)',                                     'both'),
+                ('{hook_style}',                   '(from job)',                                     'both'),
+                ('{word_count_target}',            sc.get('word_count_target',175)|string,           'script'),
+                ('{word_count_min}',               (sc.get('word_count_target',175)*0.9)|int|string, 'script'),
+                ('{word_count_max}',               (sc.get('word_count_target',175)*1.1)|int|string, 'script'),
+                ('{target_length_seconds}',        ch.get('target_length_seconds',70)|string,        'script'),
+                ('{images_to_generate}',           sc.get('images_to_generate',8)|string,            'script'),
+                ('{narration}',                    '(from script JSON)',                              'metadata'),
+                ('{hashtag_count}',                mt.get('hashtag_count',10)|string,                'metadata'),
+                ('{description_max_chars}',        mt.get('description_max_chars',150)|string,       'metadata'),
+                ('{youtube_description_max_chars}',mt.get('youtube_description_max_chars',500)|string,'metadata'),
+                ('{default_hashtags}',             mt.get('default_hashtags',[])|join(', '),         'metadata'),
+            ] %}
+            <tr>
+                <td class="font-mono text-blue-400 text-xs">{{ var }}</td>
+                <td class="text-slate-300 text-xs">{{ val }}</td>
+                <td class="text-xs" style="color:var(--muted)">{{ used }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function testPrompt(type, promptText) {
+    const panel  = document.getElementById('test-panel');
+    const output = document.getElementById('test-output');
+    const meta   = document.getElementById('test-meta');
+
+    panel.classList.remove('hidden');
+    output.textContent = 'Calling Claude API...';
+    meta.textContent = '';
+
+    try {
+        const res = await fetch('/api/test-prompt', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ type, prompt: promptText })
+        });
+        const data = await res.json();
+        if (data.error) {
+            output.textContent = 'Error: ' + data.error;
+            output.style.color = '#f87171';
+        } else {
+            output.textContent = data.preview;
+            output.style.color = '';
+            meta.textContent = `Topic: "${data.topic}" — ${data.elapsed_seconds}s`;
+        }
+    } catch(e) {
+        output.textContent = 'Request failed: ' + e.message;
+    }
+}
+</script>
+{% endblock %}

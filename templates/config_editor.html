@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block title %}Config editor — VideoForge{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-5">
+    <h1 class="text-lg font-semibold text-white">Config editor</h1>
+    <p class="text-xs" style="color:var(--muted)">Changes apply to the next job run — not retroactively.</p>
+</div>
+
+<form id="config-form" method="post" action="/config">
+    <input type="hidden" id="config-json-field" name="config_json">
+
+    {% set sc = config.get('script', {}) %}
+    {% set vc = config.get('voice', {}) %}
+    {% set vi = config.get('visuals', {}) %}
+    {% set vd = config.get('video', {}) %}
+    {% set ca = config.get('captions', {}) %}
+    {% set th = config.get('thumbnail', {}) %}
+    {% set mt = config.get('metadata', {}) %}
+    {% set po = config.get('posting', {}) %}
+
+    <!-- Script -->
+    <div class="card rounded-lg mb-4 overflow-hidden">
+        <div class="px-5 py-3 border-b" style="border-color:var(--border)">
+            <h2 class="font-semibold text-white text-sm">Script (Claude API)</h2>
+        </div>
+        <div class="divide-y" style="border-color:var(--border)">
+            {{ row('script.model',             sc.get('model',''),          'text',   'Claude model ID',        'e.g. claude-sonnet-4-6') }}
+            {{ row('script.temperature',        sc.get('temperature',0.7),   'number', 'Sampling temperature',   '0.0–1.0. Higher = more creative. Start at 0.7.') }}
+            {{ row('script.word_count_target',  sc.get('word_count_target',175),'number','Target word count','160–200 is ideal for ~70s narration.') }}
+            {{ row('script.max_tokens',         sc.get('max_tokens',1000),   'number', 'Max response tokens',    'Keep at 1000 or above.') }}
+            {{ row('script.images_to_generate', sc.get('images_to_generate',8),'number','Images per video',    '8 is standard for a ~70s video.') }}
+            {{ row('script.hook_style',         sc.get('hook_style','shocking_fact'),'text','Default hook style','shocking_fact / wrong_assumption / nobody_talks') }}
+        </div>
+    </div>
+
+    <!-- Voice -->
+    <div class="card rounded-lg mb-4 overflow-hidden">
+        <div class="px-5 py-3 border-b" style="border-color:var(--border)">
+            <h2 class="font-semibold text-white text-sm">Voice (ElevenLabs)</h2>
+        </div>
+        <div class="divide-y" style="border-color:var(--border)">
+            {{ row('voice.stability',           vc.get('stability',0.65),    'number', 'Stability',              '0.0–1.0. Higher = more consistent, less expressive. Recommended: 0.5–0.7.') }}
+            {{ row('voice.similarity_boost',    vc.get('similarity_boost',0.80),'number','Similarity boost',    '0.0–1.0. How closely to match the original voice. Recommended: 0.75–0.85.') }}
+            {{ row('voice.style_exaggeration',  vc.get('style_exaggeration',0.20),'number','Style exaggeration','0.0–1.0. Adds expression. Keep low (0.1–0.3) for narration.') }}
+            {{ row('voice.chunk_by_section',    vc.get('chunk_by_section',true),'text','Chunk by section',     'true/false — generates hook, body, cta separately for better pacing.') }}
+        </div>
+    </div>
+
+    <!-- Visuals -->
+    <div class="card rounded-lg mb-4 overflow-hidden">
+        <div class="px-5 py-3 border-b" style="border-color:var(--border)">
+            <h2 class="font-semibold text-white text-sm">Visuals (Leonardo.AI)</h2>
+        </div>
+        <div class="divide-y" style="border-color:var(--border)">
+            {{ row('visuals.style_preset_id',   vi.get('style_preset_id',''),'text',  'Style preset ID',        'Lock this after testing 5 styles. NEVER change after locking.') }}
+            {{ row('visuals.guidance_scale',    vi.get('guidance_scale',7),  'number', 'Guidance scale',         '1–20. Higher = closer to prompt. 7 is standard.') }}
+            {{ row('visuals.num_inference_steps',vi.get('num_inference_steps',30),'number','Inference steps',  '20–50. More steps = sharper but slower. 30 is balanced.') }}
+            {{ row('visuals.negative_prompt',   vi.get('negative_prompt',''),'text',  'Negative prompt',        'What to exclude from all images.') }}
+        </div>
+    </div>
+
+    <!-- Video assembly -->
+    <div class="card rounded-lg mb-4 overflow-hidden">
+        <div class="px-5 py-3 border-b" style="border-color:var(--border)">
+            <h2 class="font-semibold text-white text-sm">Video assembly</h2>
+        </div>
+        <div class="divide-y" style="border-color:var(--border)">
+            {{ row('video.transition_duration', vd.get('transition_duration',0.3),'number','Crossfade duration (s)','0.2–0.5. Start at 0.3. Adjust after watching first video.') }}
+            {{ row('video.music_volume_db',     vd.get('music_volume_db',-18), 'number', 'Music volume (dB)',      '-18 is quiet. Increase if music feels too quiet. Range: -30 to -10.') }}
+            {{ row('video.fps',                 vd.get('fps',30),              'number', 'Frame rate',             '30 fps is standard for Shorts/TikTok.') }}
+            {{ row('video.bitrate',             vd.get('bitrate','8000k'),     'text',   'Video bitrate',          '8000k is high quality. Reduce to 5000k if upload is slow.') }}
+        </div>
+    </div>
+
+    <!-- Captions -->
+    <div class="card rounded-lg mb-4 overflow-hidden">
+        <div class="px-5 py-3 border-b" style="border-color:var(--border)">
+            <h2 class="font-semibold text-white text-sm">Captions</h2>
+        </div>
+        <div class="divide-y" style="border-color:var(--border)">
+            {{ row('captions.whisper_model',    ca.get('whisper_model','base'),'text',  'Whisper model',          'base (fast) / small / medium (accurate). Upgrade if captions are wrong.') }}
+            {{ row('captions.font_size',        ca.get('font_size',56),        'number', 'Font size (px)',         '48–64 for 1080x1920. Start at 56.') }}
+            {{ row('captions.stroke_width',     ca.get('stroke_width',3),      'number', 'Stroke width',           '2–4 px outline makes captions readable on any background.') }}
+            {{ row('captions.position_y_percent',ca.get('position_y_percent',0.72),'number','Vertical position','0.0 = top, 1.0 = bottom. 0.72 puts captions in lower third.') }}
+            {{ row('captions.max_chars_per_line',ca.get('max_chars_per_line',32),'number','Max chars per line',  'Reduce if words overflow screen edges. Start at 32.') }}
+        </div>
+    </div>
+
+    <!-- Thumbnail -->
+    <div class="card rounded-lg mb-4 overflow-hidden">
+        <div class="px-5 py-3 border-b" style="border-color:var(--border)">
+            <h2 class="font-semibold text-white text-sm">Thumbnail</h2>
+        </div>
+        <div class="divide-y" style="border-color:var(--border)">
+            {{ row('thumbnail.frame_capture_at_seconds', th.get('frame_capture_at_seconds',5), 'number', 'Capture frame at (s)', 'Watch assembled videos to find the most visually striking second.') }}
+        </div>
+    </div>
+
+    <!-- Posting -->
+    <div class="card rounded-lg mb-6 overflow-hidden">
+        <div class="px-5 py-3 border-b" style="border-color:var(--border)">
+            <h2 class="font-semibold text-white text-sm">Posting</h2>
+        </div>
+        <div class="divide-y" style="border-color:var(--border)">
+            {{ row('posting.batch_size_per_week', po.get('batch_size_per_week',5), 'number', 'Batch size per week', 'How many videos to produce in one Sunday session.') }}
+            {{ row('posting.timezone',            po.get('timezone','Europe/Skopje'),'text','Timezone',            'Used for scheduling. IANA format e.g. Europe/Skopje.') }}
+            {{ row('metadata.hashtag_count',      mt.get('hashtag_count',10),      'number', 'Hashtag count',        'Total hashtags per TikTok post (including defaults). 8–12.') }}
+        </div>
+    </div>
+
+    <div class="flex gap-3">
+        <button type="submit" id="save-btn" class="btn btn-primary">Save config</button>
+        <button type="button" onclick="reloadPage()" class="btn btn-ghost">Reload from disk</button>
+    </div>
+</form>
+
+{% endblock %}
+
+{% macro row(path, value, type, label, hint) %}
+<div class="flex items-start gap-4 px-5 py-3">
+    <div class="w-56 flex-shrink-0">
+        <div class="text-slate-300 text-xs font-medium">{{ label }}</div>
+        <div class="font-mono text-xs mt-0.5" style="color:var(--muted)">{{ path }}</div>
+    </div>
+    <div class="flex-1">
+        <input type="{{ type }}" data-path="{{ path }}" value="{{ value }}"
+               step="any" class="inp text-xs"
+               style="max-width: 320px">
+    </div>
+    <div class="w-64 text-xs leading-relaxed" style="color:var(--muted)">{{ hint }}</div>
+</div>
+{% endmacro %}
+
+{% block scripts %}
+<script>
+// Build the full config JSON from the original loaded config, then apply any changed field values.
+let configData = {{ config | tojson }};
+
+document.getElementById('save-btn').addEventListener('click', function(e) {
+    e.preventDefault();
+    const inputs = document.querySelectorAll('input[data-path]');
+    inputs.forEach(inp => {
+        const parts = inp.dataset.path.split('.');
+        let obj = configData;
+        for (let i = 0; i < parts.length - 1; i++) {
+            if (!obj[parts[i]]) obj[parts[i]] = {};
+            obj = obj[parts[i]];
+        }
+        const key = parts[parts.length - 1];
+        const raw = inp.value.trim();
+        // Preserve original type
+        const orig = obj[key];
+        if (typeof orig === 'number') {
+            obj[key] = parseFloat(raw) || parseInt(raw) || 0;
+        } else if (typeof orig === 'boolean') {
+            obj[key] = raw === 'true';
+        } else {
+            obj[key] = raw;
+        }
+    });
+    document.getElementById('config-json-field').value = JSON.stringify(configData, null, 2);
+    document.getElementById('config-form').submit();
+});
+
+function reloadPage() {
+    if (confirm('Reload form from disk? Unsaved changes will be lost.')) {
+        location.reload();
+    }
+}
+</script>
+{% endblock %}
