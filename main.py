@@ -183,6 +183,35 @@ def cmd_generate_images(args) -> None:
         sys.exit(1)
 
 
+def cmd_assemble(args) -> None:
+    """
+    Run Stage 4: assemble raw MP4 from images and audio for an existing job.
+
+    Args:
+        args: Parsed argparse namespace with job_id attribute.
+    """
+    from database import init_db, get_job
+    from modules.assembly_engine import assemble_video
+
+    config = load_config()
+    init_db()
+
+    job = get_job(args.job_id)
+    if not job:
+        print(f"ERROR: Job {args.job_id} not found. Run generate-script first.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"\nJob {args.job_id} — assembling video for: '{job['topic']}'")
+
+    result = assemble_video(job_id=args.job_id, config=config)
+
+    if result['success']:
+        print(f"\nRaw video saved to: {result['output_path']}")
+    else:
+        print(f"\nERROR: Assembly failed — {result['error']}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_test_connections(args) -> None:
     """
     Run the API connection test suite.
@@ -293,6 +322,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_images = subparsers.add_parser('generate-images', help='Run Stage 3: generate images')
     p_images.add_argument('job_id', type=str, help='Job ID e.g. 001')
 
+    # assemble
+    p_assemble = subparsers.add_parser('assemble', help='Run Stage 4: assemble raw MP4')
+    p_assemble.add_argument('job_id', type=str, help='Job ID e.g. 001')
+
     # status
     p_status = subparsers.add_parser('status', help='Show status of a single job')
     p_status.add_argument('job_id', type=str, help='Job ID e.g. 001')
@@ -308,6 +341,7 @@ COMMAND_MAP = {
     'generate-script':  cmd_generate_script,
     'generate-voice':   cmd_generate_voice,
     'generate-images':  cmd_generate_images,
+    'assemble':         cmd_assemble,
     'status':           cmd_status,
     'list-jobs':        cmd_list_jobs,
 }
