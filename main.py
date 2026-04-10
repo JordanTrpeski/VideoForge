@@ -212,6 +212,44 @@ def cmd_assemble(args) -> None:
         sys.exit(1)
 
 
+def cmd_add_captions(args) -> None:
+    """
+    Run Stage 5: transcribe audio and burn captions into the raw video.
+
+    Args:
+        args: Parsed argparse namespace with job_id attribute.
+    """
+    from database import init_db, get_job
+    from modules.caption_engine import add_captions
+
+    config = load_config()
+    init_db()
+
+    job = get_job(args.job_id)
+    if not job:
+        print(f"ERROR: Job {args.job_id} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    if not job.get('raw_video_path'):
+        print(
+            f"ERROR: Job {args.job_id} has no raw video yet (status: {job['status']}). "
+            "Run assemble first.",
+            file=sys.stderr
+        )
+        sys.exit(1)
+
+    print(f"\nJob {args.job_id} — adding captions for: '{job['topic']}'")
+
+    result = add_captions(job_id=args.job_id, config=config)
+
+    if result['success']:
+        print(f"\nCaptioned video: {result['output_path']}")
+        print(f"Caption blocks:  {result['caption_count']}")
+    else:
+        print(f"\nERROR: Caption engine failed — {result['error']}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_test_connections(args) -> None:
     """
     Run the API connection test suite.
@@ -326,6 +364,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_assemble = subparsers.add_parser('assemble', help='Run Stage 4: assemble raw MP4')
     p_assemble.add_argument('job_id', type=str, help='Job ID e.g. 001')
 
+    # add-captions
+    p_captions = subparsers.add_parser('add-captions', help='Run Stage 5: burn captions into video')
+    p_captions.add_argument('job_id', type=str, help='Job ID e.g. 001')
+
     # status
     p_status = subparsers.add_parser('status', help='Show status of a single job')
     p_status.add_argument('job_id', type=str, help='Job ID e.g. 001')
@@ -342,6 +384,7 @@ COMMAND_MAP = {
     'generate-voice':   cmd_generate_voice,
     'generate-images':  cmd_generate_images,
     'assemble':         cmd_assemble,
+    'add-captions':     cmd_add_captions,
     'status':           cmd_status,
     'list-jobs':        cmd_list_jobs,
 }
