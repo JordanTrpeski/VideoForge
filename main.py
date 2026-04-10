@@ -314,6 +314,59 @@ def cmd_generate_thumbnail(args) -> None:
         sys.exit(1)
 
 
+def cmd_upload(args) -> None:
+    """
+    Run Stage 7: upload captioned video to YouTube Shorts and TikTok.
+
+    Args:
+        args: Parsed argparse namespace with job_id attribute.
+    """
+    from database import init_db, get_job
+    from modules.upload_engine import upload_video
+
+    config = load_config()
+    init_db()
+
+    job = get_job(args.job_id)
+    if not job:
+        print(f"ERROR: Job {args.job_id} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    if not job.get('final_video_path') and not job.get('raw_video_path'):
+        print(
+            f"ERROR: Job {args.job_id} has no video yet (status: {job['status']}). "
+            "Run assemble and add-captions first.",
+            file=sys.stderr
+        )
+        sys.exit(1)
+
+    print(f"\nJob {args.job_id} — uploading video for: '{job['topic']}'")
+
+    result = upload_video(job_id=args.job_id, config=config)
+
+    yt = result.get('youtube', {})
+    tt = result.get('tiktok', {})
+
+    if yt.get('skipped'):
+        print(f"\nYouTube:  SKIPPED — {yt['error']}")
+    elif yt.get('success'):
+        print(f"\nYouTube:  {yt['url']}")
+    else:
+        print(f"\nYouTube:  FAILED — {yt.get('error', 'unknown error')}", file=sys.stderr)
+
+    if tt.get('skipped'):
+        print(f"TikTok:   SKIPPED — {tt['error']}")
+    elif tt.get('success'):
+        print(f"TikTok:   {tt['url']}")
+    else:
+        print(f"TikTok:   FAILED — {tt.get('error', 'unknown error')}", file=sys.stderr)
+
+    if not result.get('success') and not result.get('all_skipped'):
+        sys.exit(1)
+
+    print()
+
+
 def cmd_test_connections(args) -> None:
     """
     Run the API connection test suite.
@@ -440,6 +493,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_thumb = subparsers.add_parser('generate-thumbnail', help='Run Stage 6b: generate thumbnail')
     p_thumb.add_argument('job_id', type=str, help='Job ID e.g. 001')
 
+    # upload
+    p_upload = subparsers.add_parser('upload', help='Run Stage 7: upload to YouTube + TikTok')
+    p_upload.add_argument('job_id', type=str, help='Job ID e.g. 001')
+
     # status
     p_status = subparsers.add_parser('status', help='Show status of a single job')
     p_status.add_argument('job_id', type=str, help='Job ID e.g. 001')
@@ -459,6 +516,7 @@ COMMAND_MAP = {
     'add-captions':        cmd_add_captions,
     'generate-metadata':   cmd_generate_metadata,
     'generate-thumbnail':  cmd_generate_thumbnail,
+    'upload':              cmd_upload,
     'status':              cmd_status,
     'list-jobs':           cmd_list_jobs,
 }
