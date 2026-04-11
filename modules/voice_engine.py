@@ -40,9 +40,10 @@ logger = setup_logger('voice_engine')
 
 ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 ELEVENLABS_MODELS = {
-    'default': 'eleven_monolingual_v1',
+    'default': 'eleven_turbo_v2_5',
     'multilingual': 'eleven_multilingual_v2',
-    'turbo': 'eleven_turbo_v2',
+    'turbo': 'eleven_turbo_v2_5',
+    'flash': 'eleven_flash_v2_5',
 }
 
 # Section order must match the script JSON keys and the intended narration flow

@@ -6,44 +6,90 @@
 <!-- Priority Alert banner -->
 {% if active_alerts %}
 {% for a in active_alerts %}
-<div class="rounded-xl mb-5 p-4 flex flex-wrap gap-4 items-center justify-between"
-     style="background:#431407;border:1px solid #92400e">
-    <div>
-        <div class="flex items-center gap-2 mb-1">
-            <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                      d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
-            </svg>
-            <span class="text-amber-300 font-semibold text-sm">Priority Alert — trending topic</span>
-            <span class="badge" style="background:#92400e;color:#fde68a">{{ "%.0f"|format(a.spike_percent) }}% spike</span>
-            <span class="badge" style="background:#1e3a5f;color:#93c5fd">{{ a.channel_fit }}/10 fit</span>
-        </div>
-        <div class="text-slate-100 font-medium">{{ a.reframed_angle or a.topic }}</div>
-        {% if a.hook_suggestion %}
-        <div class="text-xs mt-0.5 text-amber-200 opacity-80">Hook: {{ a.hook_suggestion }}</div>
-        {% endif %}
+{% set urgency_color = {'high':'#7f1d1d','medium':'#431407','low':'#1e3a5f'}[a.urgency or 'medium'] %}
+{% set urgency_border = {'high':'#dc2626','medium':'#92400e','low':'#3b82f6'}[a.urgency or 'medium'] %}
+{% set urgency_label  = {'high':'HIGH','medium':'MEDIUM','low':'LOW'}[a.urgency or 'medium'] %}
+{% set urgency_text   = {'high':'text-red-400','medium':'text-amber-400','low':'text-blue-400'}[a.urgency or 'medium'] %}
+<div class="rounded-xl mb-3 p-3" style="background:{{ urgency_color }};border:1px solid {{ urgency_border }}">
+
+    <!-- Row 1: urgency + title + badges + expiry -->
+    <div class="flex items-center gap-2 mb-1 flex-wrap">
+        <span class="badge text-xs font-bold {{ urgency_text }}" style="background:rgba(0,0,0,.25)">{{ urgency_label }}</span>
+        <span class="text-slate-100 font-semibold text-sm">{{ a.reframed_angle or a.topic }}</span>
+        <span class="badge text-xs" style="background:rgba(0,0,0,.3);color:#fde68a">{{ "%.0f"|format(a.spike_percent) }}% spike</span>
+        <span class="badge text-xs" style="background:rgba(0,0,0,.3);color:#93c5fd">{{ a.channel_fit }}/10 fit</span>
         {% if a.expires_at %}
-        <div class="text-xs mt-0.5 text-amber-400">
-            Window closes: {{ a.expires_at[:16] }}
-        </div>
+        <span class="text-xs ml-auto" style="color:rgba(253,230,138,.6)">Closes {{ a.expires_at|fmt_expires }}</span>
         {% endif %}
     </div>
+
+    <!-- Row 2: hook (truncated) -->
+    {% if a.hook_suggestion %}
+    <div class="text-xs mb-1.5 truncate" style="color:rgba(253,230,138,.75)">"{{ a.hook_suggestion }}"</div>
+    {% endif %}
+
+    <!-- Why trending / why relevant -->
+    {% if a.why_trending %}
+    <div class="text-xs mb-0.5">
+        <span class="text-slate-500">Why spiking: </span><span class="text-slate-300">{{ a.why_trending }}</span>
+    </div>
+    {% endif %}
+    {% if a.why_relevant %}
+    <div class="text-xs mb-2">
+        <span class="text-slate-500">Why it fits: </span><span class="text-slate-400">{{ a.why_relevant }}</span>
+    </div>
+    {% endif %}
+
+    <!-- 3 angle option cards -->
+    {% if a.angle_options %}
+    <div class="grid grid-cols-3 gap-1.5 mb-2" id="angles-{{ a.id }}">
+        {% for angle in a.angle_options %}
+        <div class="angle-card rounded p-2 cursor-pointer text-xs transition-colors"
+             style="border:1px solid {{ urgency_border }};background:rgba(0,0,0,.2)"
+             onclick="selectAngle({{ a.id }}, this)">
+            <div class="font-semibold text-amber-100 mb-0.5 leading-tight">{{ angle.title }}</div>
+            <div class="leading-tight" style="color:rgba(148,163,184,.8)">{{ angle.hook }}</div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Action buttons -->
     <div class="flex gap-2">
-        <form method="POST" action="/research/alerts/{{ a.id }}/fast-track">
-            <button type="submit" class="btn btn-warning">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <form method="POST" action="/research/alerts/{{ a.id }}/fast-track" id="ft-form-{{ a.id }}">
+            <input type="hidden" name="selected_angle" id="ft-angle-{{ a.id }}" value="">
+            <button type="submit" class="btn btn-warning text-xs" style="padding:4px 12px">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
                 </svg>
-                Fast-track this video
+                Fast-track
             </button>
         </form>
         <form method="POST" action="/research/alerts/{{ a.id }}/dismiss">
-            <button type="submit" class="btn btn-ghost">Dismiss</button>
+            <button type="submit" class="btn btn-ghost text-xs" style="padding:4px 10px">Dismiss</button>
         </form>
     </div>
 </div>
 {% endfor %}
 {% endif %}
+
+{% block alert_scripts %}
+<script>
+function selectAngle(alertId, el) {
+    // Clear selection in this alert's group
+    document.querySelectorAll(`#angles-${alertId} .angle-card`).forEach(c => {
+        c.style.borderColor = c.closest('[id^="angles-"]').dataset.border || '';
+        c.style.background  = 'rgba(0,0,0,.2)';
+    });
+    // Highlight chosen card
+    el.style.borderColor = '#f59e0b';
+    el.style.background  = 'rgba(245,158,11,.12)';
+    // Write title into the hidden fast-track input
+    const title = el.querySelector('.font-semibold').textContent.trim();
+    document.getElementById(`ft-angle-${alertId}`).value = title;
+}
+</script>
+{% endblock %}
 
 <h1 class="text-lg font-semibold text-white mb-5">Overview</h1>
 

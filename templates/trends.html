@@ -67,14 +67,19 @@
         </thead>
         <tbody>
             {% for a in active_alerts %}
+            {% set urg = a.urgency or 'medium' %}
             <tr>
                 <td>
-                    <div class="font-medium text-slate-100">{{ a.topic }}</div>
-                    {% if a.reframed_angle %}
-                    <div class="text-xs mt-0.5 text-blue-400">{{ a.reframed_angle }}</div>
+                    <div class="flex items-center gap-1.5">
+                        <span class="badge text-xs {% if urg == 'high' %}text-red-400{% elif urg == 'low' %}text-blue-400{% else %}text-amber-400{% endif %}"
+                              style="background:rgba(0,0,0,.2);padding:1px 5px">{{ urg|upper }}</span>
+                        <span class="font-medium text-slate-100">{{ a.reframed_angle or a.topic }}</span>
+                    </div>
+                    {% if a.why_trending %}
+                    <div class="text-xs mt-0.5" style="color:var(--muted)">{{ a.why_trending }}</div>
                     {% endif %}
                     {% if a.hook_suggestion %}
-                    <div class="text-xs mt-0.5" style="color:var(--muted)">Hook: {{ a.hook_suggestion }}</div>
+                    <div class="text-xs mt-0.5 text-slate-500 italic truncate" style="max-width:320px">"{{ a.hook_suggestion }}"</div>
                     {% endif %}
                 </td>
                 <td><span class="badge badge-gray">{{ a.bucket }}</span></td>
@@ -84,7 +89,7 @@
                         {{ a.channel_fit }}/10
                     </span>
                 </td>
-                <td class="text-xs" style="color:var(--muted)">{{ a.expires_at[:16] if a.expires_at else '—' }}</td>
+                <td class="text-xs" style="color:var(--muted)">{{ a.expires_at|fmt_expires }}</td>
                 <td class="text-right">
                     <div class="flex gap-2 justify-end">
                         <form method="POST" action="/research/alerts/{{ a.id }}/fast-track">

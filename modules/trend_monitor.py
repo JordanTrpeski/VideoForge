@@ -40,6 +40,24 @@ from email.mime.text import MIMEText
 from pathlib import Path
 
 # 2. Third-party libraries
+
+# --- urllib3 2.x compatibility shim -------------------------------------------
+# pytrends 4.9.2 passes `method_whitelist` to urllib3.Retry(), but urllib3 2.0
+# renamed it to `allowed_methods` and removed the old name entirely.  Patch
+# Retry.__init__ once so pytrends works without downgrading urllib3 system-wide.
+import urllib3.util.retry as _urllib3_retry
+if not hasattr(_urllib3_retry.Retry, '_vf_compat_patched'):
+    _orig_retry_init = _urllib3_retry.Retry.__init__
+
+    def _retry_compat(self, *args, method_whitelist=None, allowed_methods=None, **kw):
+        if method_whitelist is not None and allowed_methods is None:
+            allowed_methods = method_whitelist
+        _orig_retry_init(self, *args, allowed_methods=allowed_methods, **kw)
+
+    _urllib3_retry.Retry.__init__ = _retry_compat
+    _urllib3_retry.Retry._vf_compat_patched = True
+# ------------------------------------------------------------------------------
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -250,22 +268,67 @@ def _check_relevance(topic: str, bucket: str, config: dict) -> dict | None:
 
 A trending topic has been detected: "{topic}" (category: {bucket})
 
-Evaluate this trending topic and respond with a JSON object containing exactly these fields:
-- "channel_fit": integer 1-10 (how well does this fit the channel format and audience)
-- "fits_channel": true or false (can this be explained in 70 seconds to a non-engineer)
-- "reframed_angle": string (reframe this trending event as an everyday engineering concept — one short sentence, suitable as a video title)
-- "hook_suggestion": string (a compelling opening hook line for this reframed angle, under 20 words)
+Respond with a JSON object containing exactly these fields:
+- "channel_fit": integer 1-10
+- "fits_channel": true or false
+- "urgency": string — see rules below
+- "why_trending": string — see rules below
+- "why_relevant": string — see rules below
+- "reframed_angle": string — see rules below
+- "hook_suggestion": string — see rules below
+- "angle_options": array of 3 objects — see rules below
 
-Scoring guide for channel_fit:
+CHANNEL_FIT SCORING:
 9–10: Perfect fit — directly about how something works, strong everyday engineering angle
 7–8: Good fit — engineering angle is clear but needs framing
 5–6: Possible fit — engineering angle exists but is a stretch
 1–4: Poor fit — political, medical, entertainment, or no engineering angle
 
-Examples of good reframes:
-- "Baltimore bridge collapse" → "Why engineers design bridges to absorb impact — not fight it"
-- "Tesla recall" → "How a software update can fix a car's steering — explained"
-- "Power outage" → "Why the US power grid fails in extreme heat"
+URGENCY — pick one:
+"high": breaking news in last 48h, something just happened
+"medium": rising trend, story developing over days
+"low": seasonal or cyclical pattern, evergreen interest spike
+
+WHY_TRENDING — 1-2 sentences max:
+Explain what real-world event or pattern is causing this search spike right now.
+Be specific. Name the event if there is one.
+GOOD: "A major automotive recall was announced this week affecting 400,000 vehicles. The story is leading tech and consumer news."
+BAD: "This topic is trending because people are searching for it." (useless)
+
+WHY_RELEVANT — 1 sentence max:
+Explain specifically why this topic fits The Engineering Brief's format, not just that it does.
+GOOD: "Product recalls are driven by failure mode analysis — a core engineering process your audience has never seen explained."
+BAD: "This fits the channel because it is an engineering topic." (too vague)
+
+REFRAMED_ANGLE — hard rules:
+- Under 10 words. Hard limit.
+- Punchy title, not an explanation. No "because" or "here's why".
+- Leads with the engineering concept, not the news event.
+GOOD: "Why Bridges Are Built to Fail"
+GOOD: "The Flaw Hiding in Every Recall"
+BAD: "Why engineers build failure thresholds that trigger a product recall" (too long)
+
+HOOK_SUGGESTION — hard rules:
+- Single sentence. Under 15 words. Hard limit.
+- Stops a scroll. Challenges a belief or states a surprising fact.
+- Ends with tension, not a conclusion.
+GOOD: "Your car was already broken. You just didn't know it yet."
+GOOD: "Engineers design bridges to collapse — on purpose."
+BAD: "A tiny flaw slips past testing, here's the system designed to catch it." (gives away the answer)
+
+ANGLE_OPTIONS — array of exactly 3 objects, each with "title" and "hook":
+- Three distinct video angles on this topic — different framings, not variations of the same idea
+- "title": under 8 words, follows REFRAMED_ANGLE rules above
+- "hook": single sentence under 15 words, follows HOOK_SUGGESTION rules above
+- First angle: the most direct engineering explanation
+- Second angle: the human failure / design flaw angle
+- Third angle: the surprising implication most people don't know
+Example format:
+[
+  {{"title": "Why Safety Systems Always Fail Twice", "hook": "The first failure is built in. The second one is the one that kills you."}},
+  {{"title": "The Flaw Hiding in Every Recall", "hook": "Your car passed every test. Then it killed someone."}},
+  {{"title": "How Recalls Actually Keep You Safe", "hook": "The recall isn't the failure. Not recalling is."}}
+]
 
 Respond with only valid JSON. No explanation outside the JSON."""
 
@@ -278,7 +341,7 @@ Respond with only valid JSON. No explanation outside the JSON."""
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
             model=model,
-            max_tokens=300,
+            max_tokens=800,
             messages=[{'role': 'user', 'content': prompt}],
         )
 
@@ -303,9 +366,17 @@ Respond with only valid JSON. No explanation outside the JSON."""
             )
             return None
 
+        # Normalise angle_options to a JSON string for DB storage
+        raw_angles = data.get('angle_options', [])
+        if isinstance(raw_angles, list):
+            data['angle_options_json'] = json.dumps(raw_angles)
+        else:
+            data['angle_options_json'] = '[]'
+
         logger.debug(
-            f"trend_monitor: Relevance — '{topic}' → fit: {data['channel_fit']}, "
-            f"fits: {data['fits_channel']}, angle: '{data['reframed_angle']}'"
+            f"trend_monitor: Relevance — '{topic}' -> fit: {data['channel_fit']}, "
+            f"urgency: {data.get('urgency','?')}, fits: {data['fits_channel']}, "
+            f"angle: '{data['reframed_angle']}'"
         )
         return data
 
@@ -516,6 +587,10 @@ def run_scan(config: dict) -> dict:
                     reframed_angle=relevance.get('reframed_angle', ''),
                     window_hours=window_hours,
                     expires_at=expires_at,
+                    why_trending=relevance.get('why_trending', ''),
+                    why_relevant=relevance.get('why_relevant', ''),
+                    angle_options=relevance.get('angle_options_json', '[]'),
+                    urgency=relevance.get('urgency', 'medium'),
                 )
                 new_alerts += 1
                 new_alert_dicts.append({
@@ -526,6 +601,9 @@ def run_scan(config: dict) -> dict:
                     'channel_fit':    channel_fit,
                     'hook_suggestion': relevance.get('hook_suggestion', ''),
                     'reframed_angle': relevance.get('reframed_angle', ''),
+                    'why_trending':   relevance.get('why_trending', ''),
+                    'why_relevant':   relevance.get('why_relevant', ''),
+                    'urgency':        relevance.get('urgency', 'medium'),
                     'expires_at':     expires_at,
                 })
                 logger.info(

@@ -18,6 +18,9 @@
     {% set th = config.get('thumbnail', {}) %}
     {% set mt = config.get('metadata', {}) %}
     {% set po = config.get('posting', {}) %}
+    {% set re = config.get('research', {}) %}
+    {% set sw = re.get('scoring_weights', {}) %}
+    {% set sk = re.get('seed_keywords', {}) %}
 
     <!-- Script -->
     <div class="card rounded-lg mb-4 overflow-hidden">
@@ -109,6 +112,51 @@
         </div>
     </div>
 
+    <!-- Research -->
+    <div class="card rounded-lg mb-4 overflow-hidden">
+        <div class="px-5 py-3 border-b" style="border-color:var(--border)">
+            <h2 class="font-semibold text-white text-sm">Research &amp; trend monitoring</h2>
+        </div>
+        <div class="divide-y" style="border-color:var(--border)">
+            {{ row('research.priority_alert_threshold',      re.get('priority_alert_threshold', 150),      'number', 'Trend spike threshold %',        'Minimum spike % to trigger a priority alert. Default 150.') }}
+            {{ row('research.priority_alert_fit_minimum',    re.get('priority_alert_fit_minimum', 7.0),    'number', 'Min channel fit score',           'Minimum Claude channel fit score 0–10 to create an alert. Default 7.0.') }}
+            {{ row('research.fast_track_window_hours',       re.get('fast_track_window_hours', 48),        'number', 'Fast track window hours',         'How many hours a priority alert stays active. Default 48.') }}
+            {{ row('research.safe_scans_per_hour',           re.get('safe_scans_per_hour', 5),             'number', 'Safe scans per hour',             'Max trend scans per hour before rate limit warning. Default 5.') }}
+            {{ row('research.safe_scans_per_day',            re.get('safe_scans_per_day', 15),             'number', 'Safe scans per day',              'Max trend scans per day. Default 15.') }}
+            {{ row('research.scan_on_startup',               re.get('scan_on_startup', true),              'text',   'Scan on startup',                 'true/false — run a trend scan when the dashboard starts.') }}
+            {{ row('research.scan_on_startup_cooldown_hours',re.get('scan_on_startup_cooldown_hours', 2),  'number', 'Startup scan cooldown hours',     'Minimum hours since last scan before auto-scanning on startup. Default 2.') }}
+            {{ row('research.notify_email',                  re.get('notify_email', ''),                   'text',   'Notification email',              'Email address to notify when a priority alert fires. Leave blank to disable.') }}
+        </div>
+    </div>
+
+    <!-- Scoring weights -->
+    <div class="card rounded-lg mb-4 overflow-hidden">
+        <div class="px-5 py-3 border-b" style="border-color:var(--border)">
+            <h2 class="font-semibold text-white text-sm">Topic scoring weights</h2>
+            <p class="text-xs mt-0.5" style="color:var(--muted)">All four weights must sum to 1.0.</p>
+        </div>
+        <div class="divide-y" style="border-color:var(--border)">
+            {{ row('research.scoring_weights.trend',       sw.get('trend', 0.30),       'number', 'Score weight — trend',       'Weight for Google Trends score. All weights should sum to 1.0.') }}
+            {{ row('research.scoring_weights.competition', sw.get('competition', 0.30), 'number', 'Score weight — competition', 'Weight for competition score.') }}
+            {{ row('research.scoring_weights.channel_fit', sw.get('channel_fit', 0.25), 'number', 'Score weight — channel fit', 'Weight for Claude channel fit score.') }}
+            {{ row('research.scoring_weights.performance', sw.get('performance', 0.15), 'number', 'Score weight — performance', 'Weight for your channel analytics performance score.') }}
+        </div>
+    </div>
+
+    <!-- Seed keywords -->
+    <div class="card rounded-lg mb-6 overflow-hidden">
+        <div class="px-5 py-3 border-b" style="border-color:var(--border)">
+            <h2 class="font-semibold text-white text-sm">Trend scan seed keywords</h2>
+            <p class="text-xs mt-0.5" style="color:var(--muted)">One keyword per line. Used to seed Google Trends queries per content bucket.</p>
+        </div>
+        <div class="divide-y" style="border-color:var(--border)">
+            {{ seed_row('research.seed_keywords.elec',    sk.get('elec', []),    'Electrical bucket keywords',    'e.g. electrical engineering, battery, circuit, power grid') }}
+            {{ seed_row('research.seed_keywords.infra',   sk.get('infra', []),   'Infrastructure bucket keywords','e.g. bridge engineering, building collapse, dam') }}
+            {{ seed_row('research.seed_keywords.vehicle', sk.get('vehicle', []), 'Vehicles bucket keywords',      'e.g. car engineering, electric vehicle, aircraft failure') }}
+            {{ seed_row('research.seed_keywords.flaw',    sk.get('flaw', []),    'Flaw bucket keywords',          'e.g. engineering failure, design flaw, product recall') }}
+        </div>
+    </div>
+
     <div class="flex gap-3">
         <button type="submit" id="save-btn" class="btn btn-primary">Save config</button>
         <button type="button" onclick="reloadPage()" class="btn btn-ghost">Reload from disk</button>
@@ -132,6 +180,21 @@
 </div>
 {% endmacro %}
 
+{% macro seed_row(path, keywords, label, hint) %}
+<div class="flex items-start gap-4 px-5 py-3">
+    <div class="w-56 flex-shrink-0">
+        <div class="text-slate-300 text-xs font-medium">{{ label }}</div>
+        <div class="font-mono text-xs mt-0.5" style="color:var(--muted)">{{ path }}</div>
+    </div>
+    <div class="flex-1">
+        <textarea data-path="{{ path }}" data-type="keywords"
+                  rows="5" class="inp text-xs font-mono"
+                  style="max-width: 320px; resize: vertical;">{{ keywords | join('\n') }}</textarea>
+    </div>
+    <div class="w-64 text-xs leading-relaxed" style="color:var(--muted)">{{ hint }}<br>One keyword per line.</div>
+</div>
+{% endmacro %}
+
 {% block scripts %}
 <script>
 // Build the full config JSON from the original loaded config, then apply any changed field values.
@@ -139,26 +202,51 @@ let configData = {{ config | tojson }};
 
 document.getElementById('save-btn').addEventListener('click', function(e) {
     e.preventDefault();
-    const inputs = document.querySelectorAll('input[data-path]');
-    inputs.forEach(inp => {
-        const parts = inp.dataset.path.split('.');
-        let obj = configData;
+
+    // Helper: walk/create nested path and set a value
+    function setPath(obj, parts, value) {
         for (let i = 0; i < parts.length - 1; i++) {
-            if (!obj[parts[i]]) obj[parts[i]] = {};
+            if (obj[parts[i]] === undefined || typeof obj[parts[i]] !== 'object') {
+                obj[parts[i]] = {};
+            }
             obj = obj[parts[i]];
         }
-        const key = parts[parts.length - 1];
-        const raw = inp.value.trim();
-        // Preserve original type
-        const orig = obj[key];
-        if (typeof orig === 'number') {
-            obj[key] = parseFloat(raw) || parseInt(raw) || 0;
-        } else if (typeof orig === 'boolean') {
-            obj[key] = raw === 'true';
-        } else {
-            obj[key] = raw;
+        obj[parts[parts.length - 1]] = value;
+    }
+
+    // Helper: get existing value at path (for type detection)
+    function getPath(obj, parts) {
+        for (let i = 0; i < parts.length; i++) {
+            if (obj === undefined || obj === null) return undefined;
+            obj = obj[parts[i]];
         }
+        return obj;
+    }
+
+    // Regular inputs
+    document.querySelectorAll('input[data-path]').forEach(inp => {
+        const parts = inp.dataset.path.split('.');
+        const raw = inp.value.trim();
+        const orig = getPath(configData, parts);
+        let coerced;
+        if (typeof orig === 'number') {
+            coerced = parseFloat(raw);
+            if (isNaN(coerced)) coerced = parseInt(raw) || 0;
+        } else if (typeof orig === 'boolean') {
+            coerced = raw === 'true';
+        } else {
+            coerced = raw;
+        }
+        setPath(configData, parts, coerced);
     });
+
+    // Textarea inputs (seed keywords — stored as arrays)
+    document.querySelectorAll('textarea[data-path]').forEach(ta => {
+        const parts = ta.dataset.path.split('.');
+        const lines = ta.value.split('\n').map(s => s.trim()).filter(s => s.length > 0);
+        setPath(configData, parts, lines);
+    });
+
     document.getElementById('config-json-field').value = JSON.stringify(configData, null, 2);
     document.getElementById('config-form').submit();
 });

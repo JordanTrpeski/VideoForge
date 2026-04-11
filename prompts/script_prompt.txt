@@ -32,13 +32,26 @@ SCRIPT RULES:
 
 IMAGE PROMPT RULES:
 1. Generate exactly {images_to_generate} image prompts.
-2. Each prompt describes a single striking visual that illustrates one moment or concept from the script.
-3. Images are generated at 1080×1920 portrait format — frame your prompts accordingly (vertical compositions, centered subject).
-4. Style: cinematic, photorealistic, high detail, dramatic lighting. No cartoons, no infographics.
-5. NEVER include: human faces, text, watermarks, logos, brand marks, NSFW content, blurry/low-quality elements.
-6. Each prompt must be self-contained — do not reference the script or use words like "scene" or "showing". Write as if briefing a visual artist.
-7. Prompts should flow in the same order as the script — the first prompt matches the hook, the last matches the CTA or final implication.
-8. Vary composition: close-up macro shots, wide atmospheric shots, cross-section diagrams rendered as physical objects, abstract energy visualisations.
+2. Every prompt must describe a real physical object or scene that could actually be photographed in a real studio — no impossible visualisations, no abstract concepts, no metaphors.
+3. NEVER include: human faces, text, watermarks, logos, brand marks, NSFW content, blurry/low-quality elements.
+4. Each prompt must be self-contained — do not reference the script or use words like "scene" or "showing". Write as if briefing a photographer on set.
+5. Prompts must flow in the same order as the script — the first prompt matches the hook, the last matches the CTA or final implication.
+6. Vary the opener across the 8 prompts — mix "Professional photograph of...", "Close-up shot of...", and "Macro photography of...". Do not start every prompt the same way.
+
+PHOTOGRAPH PROMPT FORMAT — every prompt must follow this exact structure:
+  [Opener] [subject — a real, physical, photographable object or scene]. [One sentence of specific physical detail]. Shot on Canon EOS R5, studio lighting, sharp focus, shallow depth of field. Vertical portrait format 9:16, composed for mobile viewing, subject centered in frame. Photorealistic, real photograph, not AI generated.
+
+WHAT MAKES A GOOD SUBJECT — ask: could a photographer physically set this up and shoot it?
+  GOOD: "Close-up shot of a corroded copper wire connector inside an electrical panel, green oxidation coating the terminal contacts. Shot on Canon EOS R5, studio lighting, sharp focus, shallow depth of field. Vertical portrait format 9:16, composed for mobile viewing, subject centered in frame. Photorealistic, real photograph, not AI generated."
+  GOOD: "Professional photograph of a car brake disc with heat-scoring marks and surface cracks across the rotor face. Shot on Canon EOS R5, studio lighting, sharp focus, shallow depth of field. Vertical portrait format 9:16, composed for mobile viewing, subject centered in frame. Photorealistic, real photograph, not AI generated."
+  GOOD: "Macro photography of a lithium-ion battery cell cross-section on a grey foam surface, internal electrode foil layers visible at the cut edge. Shot on Canon EOS R5, studio lighting, sharp focus, shallow depth of field. Vertical portrait format 9:16, composed for mobile viewing, subject centered in frame. Photorealistic, real photograph, not AI generated."
+
+NEVER write:
+  - glowing effects, light trails, or energy beams ("glowing circuit", "energy flowing through")
+  - magical or impossible lighting ("ethereal glow", "energy emanating from", "light radiating outward")
+  - abstract concepts rendered as visuals ("the idea of", "representing", "symbolising", "visualisation of")
+  - floating or physically impossible arrangements ("circuits suspended in mid-air", "electrons visible as particles")
+  - illustrations, paintings, or rendered artwork of any kind
 
 ---
 

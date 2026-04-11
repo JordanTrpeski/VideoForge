@@ -60,6 +60,44 @@ def fromjson_filter(value):
     except Exception:
         return []
 
+
+@app.template_filter('fmt_expires')
+def fmt_expires_filter(dt_str: str) -> str:
+    """
+    Format a UTC ISO datetime string as a human-readable local time.
+
+    Input:  '2026-04-13T11:10:43'  (UTC stored in DB)
+    Output: 'Sun 13 Apr · 11:10'   (Europe/Skopje local time)
+    """
+    if not dt_str:
+        return '—'
+    try:
+        from datetime import timezone
+        from zoneinfo import ZoneInfo
+        dt = datetime.fromisoformat(dt_str).replace(tzinfo=timezone.utc)
+        dt_local = dt.astimezone(ZoneInfo('Europe/Skopje'))
+        return dt_local.strftime('%a %d %b · %H:%M')
+    except Exception:
+        return dt_str[:16]
+
+
+def _parse_alert_angles(alerts: list) -> list:
+    """
+    Parse the `angle_options` JSON string on each alert dict into a Python list
+    so templates can iterate without filter gymnastics.
+    """
+    import json as _json
+    for a in alerts:
+        raw = a.get('angle_options')
+        if isinstance(raw, str) and raw.strip():
+            try:
+                a['angle_options'] = _json.loads(raw)
+            except (_json.JSONDecodeError, ValueError):
+                a['angle_options'] = []
+        elif not raw:
+            a['angle_options'] = []
+    return alerts
+
 # Register the webhook blueprint (provides /webhook/new-topic)
 app.register_blueprint(webhook_bp)
 
@@ -326,6 +364,76 @@ def _clear_job_outputs(job_id: str) -> None:
             pass
 
 
+# Files and DB fields to wipe when restarting FROM a given stage.
+# Each entry clears that stage plus everything that comes after it.
+_STAGE_CLEAR_MAP = {
+    'generate-script': {
+        'files':  [
+            'output/scripts/{id}.json',
+            'output/audio/{id}.mp3', 'output/audio/{id}_hook.mp3',
+            'output/audio/{id}_body.mp3', 'output/audio/{id}_cta.mp3',
+            'output/images/{id}',
+            'output/videos/{id}_raw.mp4', 'output/videos/{id}_captioned.mp4',
+            'output/thumbnails/{id}.jpg', 'output/metadata/{id}.json',
+        ],
+        'fields': ['script_path', 'audio_path', 'images_dir',
+                   'raw_video_path', 'final_video_path', 'thumbnail_path', 'metadata_path'],
+    },
+    'generate-voice': {
+        'files':  [
+            'output/audio/{id}.mp3', 'output/audio/{id}_hook.mp3',
+            'output/audio/{id}_body.mp3', 'output/audio/{id}_cta.mp3',
+            'output/images/{id}',
+            'output/videos/{id}_raw.mp4', 'output/videos/{id}_captioned.mp4',
+            'output/thumbnails/{id}.jpg', 'output/metadata/{id}.json',
+        ],
+        'fields': ['audio_path', 'images_dir', 'raw_video_path',
+                   'final_video_path', 'thumbnail_path', 'metadata_path'],
+    },
+    'generate-images': {
+        'files':  [
+            'output/images/{id}',
+            'output/videos/{id}_raw.mp4', 'output/videos/{id}_captioned.mp4',
+            'output/thumbnails/{id}.jpg', 'output/metadata/{id}.json',
+        ],
+        'fields': ['images_dir', 'raw_video_path', 'final_video_path',
+                   'thumbnail_path', 'metadata_path'],
+    },
+    'assemble': {
+        'files':  [
+            'output/videos/{id}_raw.mp4', 'output/videos/{id}_captioned.mp4',
+            'output/thumbnails/{id}.jpg', 'output/metadata/{id}.json',
+        ],
+        'fields': ['raw_video_path', 'final_video_path', 'thumbnail_path', 'metadata_path'],
+    },
+}
+
+
+def _clear_from_stage(job_id: str, from_stage: str) -> None:
+    """
+    Delete output files and clear DB fields for all pipeline stages at or after
+    `from_stage`.  Used for partial rejections so earlier stages are preserved.
+    """
+    spec = _STAGE_CLEAR_MAP.get(from_stage)
+    if spec is None:
+        _clear_job_outputs(job_id)
+        return
+    for pattern in spec['files']:
+        p = Path(pattern.replace('{id}', job_id))
+        try:
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            elif p.exists():
+                p.unlink()
+        except Exception as exc:
+            logger.warning(f"Could not delete {p}: {exc}")
+    for field in spec['fields']:
+        try:
+            update_job_field(job_id, field, None)
+        except Exception:
+            pass
+
+
 def _status_color(status: str) -> str:
     mapping = {
         'queued': 'gray', 'scripting': 'blue', 'voiced': 'blue',
@@ -357,7 +465,7 @@ def overview():
                            review_jobs=review_jobs,
                            pipeline_running=pipeline_running,
                            pipeline_job_id=pipeline_job_id,
-                           active_alerts=get_active_alerts(),
+                           active_alerts=_parse_alert_angles(get_active_alerts()),
                            active='overview')
 
 
@@ -497,15 +605,133 @@ def approve_job(job_id):
 
 @app.route('/jobs/<job_id>/reject', methods=['POST'])
 def reject_job(job_id):
+    """
+    Reject a job at review with a targeted redo mode.
+
+    Form params:
+        mode  — full | script | voice | images | assembly  (default: full)
+        note  — optional free-text review note saved to jobs.review_note
+    """
     job = get_job(job_id)
     if not job:
         flash('Job not found.', 'error')
         return redirect(url_for('overview'))
-    _clear_job_outputs(job_id)
-    # update_job_status clears error_module + error_message when passed None
+
+    mode = request.form.get('mode', 'full')
+    note = request.form.get('note', '').strip()
+
+    if note:
+        update_job_field(job_id, 'review_note', note)
+
+    stage_map = {
+        'full':     ('generate-script', 'full pipeline'),
+        'script':   ('generate-script', 'script'),
+        'voice':    ('generate-voice',  'voice'),
+        'images':   ('generate-images', 'images'),
+        'assembly': ('assemble',        'assembly'),
+    }
+    from_stage, label = stage_map.get(mode, ('generate-script', 'full pipeline'))
+
+    _clear_from_stage(job_id, from_stage)
     update_job_status(job_id, 'queued', error_module=None, error_message=None)
-    flash(f'Job {job_id} rejected — output cleared, returned to queue.', 'warning')
-    return redirect(request.referrer or url_for('overview'))
+
+    config = _load_config()
+    threading.Thread(
+        target=_run_pipeline_thread,
+        args=(job_id, config, from_stage),
+        daemon=True,
+    ).start()
+
+    flash(f'Job {job_id} — redoing from {label}.', 'warning')
+    return redirect(url_for('job_detail', job_id=job_id))
+
+
+@app.route('/jobs/<job_id>/archive', methods=['POST'])
+def archive_job(job_id):
+    """Mark a job as archived — removes it from the active queue, keeps script for reference."""
+    job = get_job(job_id)
+    if not job:
+        flash('Job not found.', 'error')
+        return redirect(url_for('jobs_list'))
+
+    note = request.form.get('note', '').strip()
+    if note:
+        update_job_field(job_id, 'review_note', note)
+
+    update_job_status(job_id, 'archived', error_module=None, error_message=None)
+    flash(f'Job {job_id} archived.', 'success')
+    return redirect(url_for('jobs_list'))
+
+
+@app.route('/jobs/<job_id>/save-script', methods=['POST'])
+def save_script_edit(job_id):
+    """
+    Save a manually edited script and restart the pipeline from voice engine.
+
+    Form params:
+        hook  — edited hook narration
+        body  — edited body narration
+        cta   — edited CTA line
+        note  — optional review note
+    """
+    import json as _json
+
+    job = get_job(job_id)
+    if not job:
+        flash('Job not found.', 'error')
+        return redirect(url_for('jobs_list'))
+
+    hook = request.form.get('hook', '').strip()
+    body = request.form.get('body', '').strip()
+    cta  = request.form.get('cta', 'Follow for more engineering explained simply.').strip()
+    note = request.form.get('note', '').strip()
+
+    if not hook or not body:
+        flash('Hook and body cannot be empty.', 'error')
+        return redirect(url_for('job_detail', job_id=job_id))
+
+    script_path = job.get('script_path') or f'output/scripts/{job_id}.json'
+    try:
+        with open(script_path, 'r', encoding='utf-8') as f:
+            script_data = _json.load(f)
+    except Exception as exc:
+        flash(f'Could not read script file: {exc}', 'error')
+        return redirect(url_for('job_detail', job_id=job_id))
+
+    # Update sections and rebuild narration
+    script_data.setdefault('sections', {})
+    script_data['sections']['hook'] = hook
+    script_data['sections']['body'] = body
+    script_data['sections']['cta']  = cta
+    narration = f"{hook} {body} {cta}"
+    script_data['narration'] = narration
+    word_count = len(narration.split())
+    script_data['word_count'] = word_count
+    script_data['estimated_duration_seconds'] = round(word_count / 2.5)
+
+    try:
+        with open(script_path, 'w', encoding='utf-8') as f:
+            _json.dump(script_data, f, indent=2, ensure_ascii=False)
+    except Exception as exc:
+        flash(f'Could not write script file: {exc}', 'error')
+        return redirect(url_for('job_detail', job_id=job_id))
+
+    if note:
+        update_job_field(job_id, 'review_note', note)
+
+    # Clear everything from voice engine onward, keep the edited script
+    _clear_from_stage(job_id, 'generate-voice')
+    update_job_status(job_id, 'queued', error_module=None, error_message=None)
+
+    config = _load_config()
+    threading.Thread(
+        target=_run_pipeline_thread,
+        args=(job_id, config, 'generate-voice'),
+        daemon=True,
+    ).start()
+
+    flash(f'Job {job_id} — script saved, pipeline restarting from voice.', 'success')
+    return redirect(url_for('job_detail', job_id=job_id))
 
 
 @app.route('/jobs/<job_id>/retry', methods=['POST'])
@@ -1123,7 +1349,7 @@ def _research_scan_context(config: dict) -> dict:
     history     = get_trend_scans(limit=50)
 
     return {
-        'active_alerts':  get_active_alerts(),
+        'active_alerts':  _parse_alert_angles(get_active_alerts()),
         'scan_history':   history,
         'last_scan':      history[0] if history else None,
         'scans_today':    count_scans_since(day_ago),
@@ -1184,7 +1410,9 @@ def fast_track_alert(alert_id):
         flash(f'Alert {alert_id} not found or no longer active.', 'error')
         return redirect(url_for('research_trends'))
 
-    topic  = alert.get('reframed_angle') or alert['topic']
+    # selected_angle is set when the user clicks one of the three angle option cards
+    selected_angle = request.form.get('selected_angle', '').strip()
+    topic  = selected_angle or alert.get('reframed_angle') or alert['topic']
     bucket = alert.get('bucket', 'elec')
     jid    = get_next_job_id()
 
@@ -1210,6 +1438,19 @@ def research_topics():
     sort_by       = request.args.get('sort', 'added_at')   # added_at | final_score | status
 
     topics = get_topics(include_archived=show_archived)
+
+    # alt_angles is stored as a JSON string in the DB — parse it into a list here
+    # so templates can iterate directly without filter gymnastics.
+    import json as _json
+    for t in topics:
+        raw = t.get('alt_angles')
+        if isinstance(raw, str) and raw.strip():
+            try:
+                t['alt_angles'] = _json.loads(raw)
+            except (_json.JSONDecodeError, ValueError):
+                t['alt_angles'] = []
+        elif not raw:
+            t['alt_angles'] = []
 
     if bucket_filter:
         topics = [t for t in topics if t.get('bucket') == bucket_filter]

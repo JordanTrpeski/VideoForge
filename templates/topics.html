@@ -228,7 +228,7 @@
                     <div class="text-xs mt-0.5" style="color:var(--muted)">Archived: {{ t.archive_reason }}</div>
                     {% endif %}
                     {% if t.alt_angles %}
-                    {% set angles = t.alt_angles | tojson | fromjson %}
+                    {% set angles = t.alt_angles %}
                     {% if angles %}
                     <div class="text-xs mt-0.5 text-slate-500 cursor-pointer hover:text-slate-300"
                          onclick="this.nextElementSibling.classList.toggle('hidden')">

@@ -411,6 +411,13 @@ def _run_migrations() -> None:
         "ALTER TABLE topic_bank ADD COLUMN competition_level TEXT",
         "ALTER TABLE topic_bank ADD COLUMN scored_at TEXT",
         "ALTER TABLE topic_bank ADD COLUMN score_version INTEGER DEFAULT 0",
+        # review gate — rejection notes
+        "ALTER TABLE jobs ADD COLUMN review_note TEXT",
+        # 11.v1.B v2 — enriched priority alert fields
+        "ALTER TABLE priority_alerts ADD COLUMN why_trending TEXT",
+        "ALTER TABLE priority_alerts ADD COLUMN why_relevant TEXT",
+        "ALTER TABLE priority_alerts ADD COLUMN angle_options TEXT",
+        "ALTER TABLE priority_alerts ADD COLUMN urgency TEXT DEFAULT 'medium'",
     ]
     conn = get_connection()
     try:
@@ -468,6 +475,10 @@ def insert_priority_alert(
     reframed_angle: str,
     window_hours: int = 48,
     expires_at: str = '',
+    why_trending: str = '',
+    why_relevant: str = '',
+    angle_options: str = '[]',
+    urgency: str = 'medium',
 ) -> int:
     """
     Create a new priority alert record.
@@ -481,6 +492,10 @@ def insert_priority_alert(
         reframed_angle (str):   Claude-suggested everyday engineering angle.
         window_hours (int):     Hours until this alert expires.
         expires_at (str):       ISO datetime string for expiry.
+        why_trending (str):     1-2 sentences on what is causing the spike.
+        why_relevant (str):     1 sentence on channel fit reason.
+        angle_options (str):    JSON array of [{title, hook}, ...] angle options.
+        urgency (str):          'high' | 'medium' | 'low'.
 
     Returns:
         int: Rowid of the inserted alert record.
@@ -490,10 +505,12 @@ def insert_priority_alert(
         cur = conn.execute(
             """INSERT INTO priority_alerts
                (topic, bucket, spike_percent, channel_fit, hook_suggestion,
-                reframed_angle, window_hours, expires_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                reframed_angle, window_hours, expires_at,
+                why_trending, why_relevant, angle_options, urgency)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (topic, bucket, spike_percent, channel_fit, hook_suggestion,
-             reframed_angle, window_hours, expires_at),
+             reframed_angle, window_hours, expires_at,
+             why_trending, why_relevant, angle_options, urgency),
         )
         conn.commit()
         return cur.lastrowid

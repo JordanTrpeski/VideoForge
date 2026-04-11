@@ -28,17 +28,132 @@
     {% endif %}
 </div>
 
-<!-- Action buttons -->
+<!-- Review gate (full panel) -->
+{% if job.status == 'review' %}
+<div class="card rounded-lg p-5 mb-5">
+    <h2 class="font-semibold text-white text-sm mb-4">Review gate</h2>
+
+    <!-- Notes field — value synced to every form before submit -->
+    <div class="mb-4">
+        <label class="text-xs text-slate-400 block mb-1">
+            Notes
+            <span class="text-slate-600 font-normal ml-1">optional — saved with whichever action you take</span>
+        </label>
+        <textarea id="review-note" rows="2" class="inp text-xs w-full"
+                  placeholder="e.g. voice sounded rushed, images don't match, hook too weak…">{{ job.review_note or '' }}</textarea>
+    </div>
+
+    <!-- Approve -->
+    <form action="/jobs/{{ job.id }}/approve" method="post" class="review-action mb-5">
+        <input type="hidden" name="note" class="note-field">
+        <button class="btn btn-success text-sm">&#10003; Approve &amp; upload</button>
+    </form>
+
+    <!-- Rejection options -->
+    <div class="border-t pt-4" style="border-color:var(--border)">
+        <p class="text-xs mb-2" style="color:var(--muted)">Reject and redo:</p>
+        <div class="flex flex-wrap gap-2 mb-2">
+
+            <form method="post" action="/jobs/{{ job.id }}/reject" class="review-action">
+                <input type="hidden" name="mode" value="full">
+                <input type="hidden" name="note" class="note-field">
+                <button class="btn btn-danger text-xs" title="Clears everything — script, voice, images, video">
+                    Redo everything
+                </button>
+            </form>
+
+            <form method="post" action="/jobs/{{ job.id }}/reject" class="review-action">
+                <input type="hidden" name="mode" value="script">
+                <input type="hidden" name="note" class="note-field">
+                <button class="btn btn-warning text-xs" title="Regenerates script and all stages after it">
+                    Redo from script
+                </button>
+            </form>
+
+            <form method="post" action="/jobs/{{ job.id }}/reject" class="review-action">
+                <input type="hidden" name="mode" value="voice">
+                <input type="hidden" name="note" class="note-field">
+                <button class="btn btn-warning text-xs" title="Keeps script — regenerates voice and all stages after it">
+                    Redo from voice
+                </button>
+            </form>
+
+            <form method="post" action="/jobs/{{ job.id }}/reject" class="review-action">
+                <input type="hidden" name="mode" value="images">
+                <input type="hidden" name="note" class="note-field">
+                <button class="btn btn-warning text-xs" title="Keeps script and voice — regenerates all 8 images then reassembles">
+                    Redo images only
+                </button>
+            </form>
+
+            <form method="post" action="/jobs/{{ job.id }}/reject" class="review-action">
+                <input type="hidden" name="mode" value="assembly">
+                <input type="hidden" name="note" class="note-field">
+                <button class="btn btn-ghost text-xs" title="Keeps script, voice, and images — reassembles the video only">
+                    Redo assembly only
+                </button>
+            </form>
+        </div>
+
+        <!-- Edit script + archive -->
+        <div class="flex flex-wrap gap-2">
+            <button type="button" class="btn btn-ghost text-xs" onclick="toggleScriptEditor()"
+                    id="edit-script-btn">
+                &#9998; Edit script then continue
+            </button>
+
+            <form method="post" action="/jobs/{{ job.id }}/archive" class="review-action">
+                <input type="hidden" name="note" class="note-field">
+                <button class="btn btn-ghost text-xs" style="color:var(--muted)"
+                        onclick="return confirm('Archive this job? It will be removed from the queue but the script is kept.')">
+                    Archive — not making this
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Script editor — hidden until toggled -->
+{% if script_data %}
+<div id="script-editor" class="card rounded-lg p-5 mb-5 hidden">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="font-semibold text-white text-sm">Edit script</h2>
+        <button type="button" class="text-xs btn btn-ghost" onclick="toggleScriptEditor()">Cancel</button>
+    </div>
+    <form method="post" action="/jobs/{{ job.id }}/save-script" class="review-action" id="script-edit-form">
+        <input type="hidden" name="note" class="note-field">
+        <div class="space-y-4">
+            <div>
+                <label class="text-xs text-slate-400 block mb-1">
+                    Hook
+                    <span class="text-slate-600 font-normal ml-1">1–2 sentences, no more than 25 words each</span>
+                </label>
+                <textarea name="hook" rows="3" class="inp text-xs w-full font-mono leading-relaxed">{{ script_data.sections.hook if script_data.get('sections') else '' }}</textarea>
+            </div>
+            <div>
+                <label class="text-xs text-slate-400 block mb-1">
+                    Body
+                    <span class="text-slate-600 font-normal ml-1">5–6 sentences</span>
+                </label>
+                <textarea name="body" rows="7" class="inp text-xs w-full font-mono leading-relaxed">{{ script_data.sections.body if script_data.get('sections') else script_data.narration }}</textarea>
+            </div>
+            <div>
+                <label class="text-xs text-slate-400 block mb-1">CTA</label>
+                <textarea name="cta" rows="2" class="inp text-xs w-full font-mono leading-relaxed">{{ script_data.sections.cta if script_data.get('sections') else 'Follow for more engineering explained simply.' }}</textarea>
+            </div>
+        </div>
+        <div class="flex gap-2 mt-4">
+            <button type="submit" class="btn btn-success text-xs">Save &amp; continue from voice</button>
+            <button type="button" class="btn btn-ghost text-xs" onclick="toggleScriptEditor()">Cancel</button>
+        </div>
+    </form>
+</div>
+{% endif %}
+
+{% endif %}{# end review gate #}
+
+<!-- Non-review action buttons -->
 <div class="flex gap-2 mb-6">
-    {% if job.status == 'review' %}
-    <form action="/jobs/{{ job.id }}/approve" method="post">
-        <button class="btn btn-success text-xs">Approve &amp; upload</button>
-    </form>
-    <form action="/jobs/{{ job.id }}/reject" method="post"
-          onsubmit="return confirm('Reject and clear all output files?')">
-        <button class="btn btn-danger text-xs">Reject &amp; redo</button>
-    </form>
-    {% endif %}
     {% if job.status == 'failed' %}
     <form action="/jobs/{{ job.id }}/retry" method="post">
         <button class="btn btn-warning text-xs">Retry from failed stage</button>
@@ -51,6 +166,14 @@
     <a href="{{ job.tiktok_url }}" target="_blank" class="btn btn-ghost text-xs">TikTok &rarr;</a>
     {% endif %}
 </div>
+
+<!-- Saved review note (shown outside review status too, for history) -->
+{% if job.review_note and job.status != 'review' %}
+<div class="card rounded-lg px-4 py-3 mb-5 text-xs" style="border-left:3px solid var(--border)">
+    <span class="text-slate-500">Review note: </span>
+    <span class="text-slate-300">{{ job.review_note }}</span>
+</div>
+{% endif %}
 
 <div class="grid grid-cols-2 gap-5 mb-5">
     <!-- Script preview -->
@@ -170,4 +293,28 @@
         Open full log viewer &rarr;
     </a>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleScriptEditor() {
+    const editor = document.getElementById('script-editor');
+    const btn    = document.getElementById('edit-script-btn');
+    if (!editor) return;
+    const opening = editor.classList.contains('hidden');
+    editor.classList.toggle('hidden', !opening);
+    if (btn) btn.textContent = opening ? '\u2715 Cancel edit' : '\u270e Edit script then continue';
+    if (opening) editor.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// Before any review-action form submits, copy the notes textarea value into
+// that form's hidden note field so every action carries the note.
+document.querySelectorAll('.review-action').forEach(function(form) {
+    form.addEventListener('submit', function() {
+        var noteVal = (document.getElementById('review-note') || {}).value || '';
+        var hidden  = form.querySelector('.note-field');
+        if (hidden) hidden.value = noteVal;
+    });
+});
+</script>
 {% endblock %}

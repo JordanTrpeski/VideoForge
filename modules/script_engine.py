@@ -122,9 +122,77 @@ def _parse_script_response(raw_text: str, job_id: str) -> dict:
     try:
         data = json.loads(text)
     except json.JSONDecodeError as e:
-        logger.error(f"[JOB {job_id}] JSON decode error: {e}")
+        logger.warning(f"[JOB {job_id}] JSON decode error (may be truncated): {e}")
         logger.debug(f"[JOB {job_id}] Raw response was: {raw_text[:500]}")
-        raise ValueError(f"Claude returned invalid JSON: {e}")
+        # Attempt to salvage a truncated response by finding the last valid
+        # top-level key boundary and closing any open braces / brackets.
+        # This handles the case where max_tokens cuts the response mid-string.
+        salvaged = None
+        # Walk backwards through the text to find the last complete key-value
+        # pair — try progressively shorter slices.
+        for cut in range(len(text), max(len(text) - 2000, 0), -1):
+            candidate = text[:cut]
+            # Count unmatched open braces/brackets
+            depth = 0
+            in_string = False
+            escape = False
+            for ch in candidate:
+                if escape:
+                    escape = False
+                    continue
+                if ch == '\\' and in_string:
+                    escape = True
+                    continue
+                if ch == '"' and not escape:
+                    in_string = not in_string
+                    continue
+                if not in_string:
+                    if ch in ('{', '['):
+                        depth += 1
+                    elif ch in ('}', ']'):
+                        depth -= 1
+            if not in_string and depth >= 0:
+                # Close all open structures
+                close_map = {'{': '}', '[': ']'}
+                # Re-derive open stack
+                stack = []
+                in_s = False
+                esc = False
+                for ch in candidate:
+                    if esc:
+                        esc = False
+                        continue
+                    if ch == '\\' and in_s:
+                        esc = True
+                        continue
+                    if ch == '"':
+                        in_s = not in_s
+                        continue
+                    if not in_s:
+                        if ch in ('{', '['):
+                            stack.append(ch)
+                        elif ch in ('}', ']'):
+                            if stack:
+                                stack.pop()
+                # Close any open string first, then close all open structures
+                closing = ''
+                if in_s:
+                    closing += '"'
+                for opener in reversed(stack):
+                    closing += close_map[opener]
+                patched = candidate + closing
+                try:
+                    salvaged = json.loads(patched)
+                    logger.warning(
+                        f"[JOB {job_id}] Salvaged truncated JSON by closing {len(closing)} char(s); "
+                        f"cut at char {cut}/{len(text)}"
+                    )
+                    break
+                except json.JSONDecodeError:
+                    continue
+        if salvaged is None:
+            raise ValueError(f"Claude returned invalid JSON (truncated, not salvageable): {e}")
+        data = salvaged
 
     # Validate top-level keys
     missing = REQUIRED_SCRIPT_KEYS - set(data.keys())
