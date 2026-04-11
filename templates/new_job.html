@@ -8,13 +8,39 @@
     <!-- Single job -->
     <div class="card rounded-lg p-5">
         <h2 class="font-semibold text-white text-sm mb-4">Add a single job</h2>
-        <form method="post" action="/jobs/new" class="space-y-4">
+        <form method="post" action="/jobs/new" class="space-y-4" id="single-job-form">
             <!-- Topic -->
             <div>
                 <label class="block text-xs text-slate-400 mb-1">Topic <span class="text-red-400">*</span></label>
-                <input type="text" name="topic" class="inp" required
-                       placeholder="e.g. Why phone chargers get warm">
+                <input type="text" name="topic" id="topic-input" class="inp" required
+                       placeholder="e.g. Why phone chargers get warm"
+                       autocomplete="off">
                 <p class="text-xs mt-1" style="color:var(--muted)">Write it as a question or curiosity hook — the script prompt will handle structure.</p>
+            </div>
+
+            <!-- Similarity warning (hidden by default) -->
+            <div id="similarity-warning" class="hidden rounded-lg p-4" style="background:#3b1f00;border:1px solid #92400e">
+                <div class="flex items-start gap-3">
+                    <svg class="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                    <div class="flex-1">
+                        <div class="text-amber-300 font-semibold text-sm">Similar topic detected</div>
+                        <div id="sim-message" class="text-xs text-amber-200 mt-1"></div>
+                        <div id="sim-angle" class="text-xs text-slate-300 mt-2 hidden">
+                            <span class="text-slate-400">Fresh angle suggestion:</span>
+                            <span id="sim-angle-text" class="italic"></span>
+                        </div>
+                        <div class="flex gap-2 mt-3">
+                            <button type="submit" class="btn btn-warning" style="font-size:12px;padding:4px 12px">
+                                Add anyway
+                            </button>
+                            <button type="button" id="btn-cancel-sim" class="btn btn-ghost" style="font-size:12px;padding:4px 12px">
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- Bucket -->
@@ -50,7 +76,9 @@
                 <p class="text-xs mt-1" style="color:var(--muted)">"Run now" starts immediately in the background. "Script only" stops after Stage 1 so you can review the script before continuing.</p>
             </div>
 
-            <button type="submit" class="btn btn-primary w-full justify-center">Add job</button>
+            <button type="button" id="btn-check-add" class="btn btn-primary w-full justify-center">
+                Add job
+            </button>
         </form>
     </div>
 
@@ -91,4 +119,65 @@
         </form>
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const form        = document.getElementById('single-job-form');
+const topicInput  = document.getElementById('topic-input');
+const btnCheck    = document.getElementById('btn-check-add');
+const warnBox     = document.getElementById('similarity-warning');
+const simMsg      = document.getElementById('sim-message');
+const simAnglWrap = document.getElementById('sim-angle');
+const simAnglText = document.getElementById('sim-angle-text');
+const btnCancel   = document.getElementById('btn-cancel-sim');
+
+btnCheck.addEventListener('click', async () => {
+    const topic = topicInput.value.trim();
+    if (!topic) {
+        form.requestSubmit();
+        return;
+    }
+
+    btnCheck.disabled = true;
+    btnCheck.textContent = 'Checking…';
+
+    try {
+        const res  = await fetch('/api/check-similarity', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ topic }),
+        });
+        const data = await res.json();
+
+        if (data.warning) {
+            const score = Math.round(data.similarity_score);
+            const match = data.similar_topic || 'an existing topic';
+            simMsg.textContent =
+                `"${topic}" is ${score}% similar to your existing topic "${match}".`;
+
+            if (data.angle_suggestion) {
+                simAnglText.textContent = data.angle_suggestion;
+                simAnglWrap.classList.remove('hidden');
+            } else {
+                simAnglWrap.classList.add('hidden');
+            }
+
+            warnBox.classList.remove('hidden');
+        } else {
+            form.submit();
+        }
+    } catch (_) {
+        form.submit();
+    } finally {
+        btnCheck.disabled = false;
+        btnCheck.textContent = 'Add job';
+    }
+});
+
+btnCancel.addEventListener('click', () => {
+    warnBox.classList.add('hidden');
+    simAnglWrap.classList.add('hidden');
+});
+</script>
 {% endblock %}

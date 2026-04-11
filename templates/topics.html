@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block title %}Topic Bank — VideoForge{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-xl font-semibold text-slate-100">Topic Bank</h1>
+        <p class="text-xs mt-0.5" style="color:var(--muted)">Store, organise, and queue topics before adding them to the pipeline</p>
+    </div>
+    <div class="flex items-center gap-3">
+        {% if show_archived %}
+        <a href="/research/topics" class="btn btn-ghost text-xs">Hide archived</a>
+        {% else %}
+        <a href="/research/topics?archived=1" class="btn btn-ghost text-xs">Show archived</a>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Flash messages -->
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% if messages %}
+{% for cat, msg in messages %}
+<div class="rounded-lg px-4 py-3 mb-4 text-sm
+    {% if cat == 'error' %}bg-red-950 text-red-300 border border-red-800
+    {% else %}bg-green-950 text-green-300 border border-green-800{% endif %}">
+    {{ msg }}
+</div>
+{% endfor %}
+{% endif %}
+{% endwith %}
+
+<!-- Add topic form -->
+<div class="card rounded-xl p-5 mb-6">
+    <h2 class="font-semibold text-white text-sm mb-4">Add topic</h2>
+    <form method="POST" action="/research/topics/add" class="flex flex-wrap gap-3 items-end">
+        <div class="flex-1 min-w-48">
+            <label class="block text-xs text-slate-400 mb-1">Topic <span class="text-red-400">*</span></label>
+            <input type="text" name="topic" class="inp" required
+                   placeholder="e.g. Why bridges oscillate in wind"
+                   autocomplete="off">
+        </div>
+        <div class="w-36">
+            <label class="block text-xs text-slate-400 mb-1">Bucket</label>
+            <select name="bucket" class="inp">
+                <option value="elec">Electrical</option>
+                <option value="infra">Infrastructure</option>
+                <option value="vehicle">Vehicles</option>
+                <option value="flaw">The Flaw</option>
+            </select>
+        </div>
+        <div class="flex-1 min-w-48">
+            <label class="block text-xs text-slate-400 mb-1">Notes</label>
+            <input type="text" name="notes" class="inp"
+                   placeholder="Optional context or angle idea">
+        </div>
+        <div class="flex-shrink-0">
+            <button type="submit" class="btn btn-primary">Add to bank</button>
+        </div>
+    </form>
+</div>
+
+<!-- Topic table -->
+{% if topics %}
+<div class="card rounded-xl overflow-hidden">
+    <table class="tbl w-full">
+        <thead>
+            <tr>
+                <th class="text-left" style="width:36px">#</th>
+                <th class="text-left">Topic</th>
+                <th class="text-left">Bucket</th>
+                <th class="text-left">Notes</th>
+                <th class="text-left">Status</th>
+                <th class="text-left">Added</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for t in topics %}
+            <tr {% if t.archived %}style="opacity:0.45"{% endif %}>
+                <td class="font-mono text-xs text-slate-500">{{ t.id }}</td>
+                <td>
+                    <span class="{% if t.archived %}line-through text-slate-500{% else %}text-slate-100 font-medium{% endif %}">
+                        {{ t.topic }}
+                    </span>
+                    {% if t.archived and t.archive_reason %}
+                    <div class="text-xs mt-0.5" style="color:var(--muted)">Archived: {{ t.archive_reason }}</div>
+                    {% endif %}
+                    {% if t.hook_suggestion %}
+                    <div class="text-xs mt-0.5 text-blue-400">Hook: {{ t.hook_suggestion }}</div>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if t.bucket %}
+                    <span class="badge badge-gray">{{ t.bucket }}</span>
+                    {% else %}
+                    <span style="color:var(--muted)">—</span>
+                    {% endif %}
+                </td>
+                <td class="text-xs" style="color:var(--muted); max-width:180px">
+                    {{ t.notes or '—' }}
+                </td>
+                <td>
+                    <span class="badge
+                        {% if t.archived %}badge-gray
+                        {% elif t.status == 'used' %}badge-green
+                        {% elif t.status == 'pending' %}badge-blue
+                        {% else %}badge-gray{% endif %}">
+                        {% if t.archived %}archived{% else %}{{ t.status }}{% endif %}
+                    </span>
+                </td>
+                <td class="text-xs font-mono" style="color:var(--muted)">
+                    {{ t.added_at[:10] if t.added_at else '—' }}
+                </td>
+                <td class="text-right">
+                    <div class="flex gap-1.5 justify-end">
+                        {% if not t.archived %}
+                        <form method="POST" action="/research/topics/{{ t.id }}/queue">
+                            <button type="submit" class="btn btn-success"
+                                    style="padding:3px 10px;font-size:11px"
+                                    title="Add to job queue">
+                                Queue
+                            </button>
+                        </form>
+                        <button type="button"
+                                class="btn btn-ghost"
+                                style="padding:3px 10px;font-size:11px"
+                                onclick="showArchiveModal({{ t.id }}, {{ t.topic|tojson }})"
+                                title="Archive topic">
+                            Archive
+                        </button>
+                        {% else %}
+                        <form method="POST" action="/research/topics/{{ t.id }}/unarchive">
+                            <button type="submit" class="btn btn-ghost"
+                                    style="padding:3px 10px;font-size:11px">
+                                Restore
+                            </button>
+                        </form>
+                        {% endif %}
+                        <form method="POST" action="/research/topics/{{ t.id }}/delete"
+                              onsubmit="return confirm('Permanently delete this topic? This cannot be undone.')">
+                            <button type="submit" class="btn btn-danger"
+                                    style="padding:3px 10px;font-size:11px"
+                                    title="Delete permanently">
+                                Delete
+                            </button>
+                        </form>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+<p class="text-xs mt-3" style="color:var(--muted)">
+    {{ topics|length }} topic{% if topics|length != 1 %}s{% endif %}
+    {% if not show_archived %} (archived hidden —
+    <a href="/research/topics?archived=1" class="text-blue-400 hover:underline">show all</a>)
+    {% endif %}
+</p>
+{% else %}
+<div class="card rounded-xl p-10 text-center" style="color:var(--muted)">
+    {% if show_archived %}
+    No topics in the bank yet. Add one above.
+    {% else %}
+    No active topics. All topics may be archived —
+    <a href="/research/topics?archived=1" class="text-blue-400 hover:underline">show archived</a>.
+    {% endif %}
+</div>
+{% endif %}
+
+<!-- Archive modal -->
+<div id="archive-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center"
+     style="background:rgba(0,0,0,0.6)">
+    <div class="card rounded-xl p-6 w-full max-w-md mx-4">
+        <h3 class="font-semibold text-white text-sm mb-1">Archive topic</h3>
+        <p id="archive-topic-label" class="text-xs text-slate-400 mb-4"></p>
+        <form id="archive-form" method="POST">
+            <div class="mb-4">
+                <label class="block text-xs text-slate-400 mb-1">Reason (optional)</label>
+                <input type="text" name="reason" class="inp"
+                       placeholder="e.g. Already covered, too niche, timing off…">
+            </div>
+            <div class="flex gap-2 justify-end">
+                <button type="button" id="archive-cancel"
+                        class="btn btn-ghost text-xs">Cancel</button>
+                <button type="submit" class="btn btn-warning text-xs">Archive</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function showArchiveModal(topicId, topicText) {
+    document.getElementById('archive-topic-label').textContent = topicText;
+    document.getElementById('archive-form').action = `/research/topics/${topicId}/archive`;
+    document.getElementById('archive-modal').classList.remove('hidden');
+}
+
+document.getElementById('archive-cancel').addEventListener('click', () => {
+    document.getElementById('archive-modal').classList.add('hidden');
+});
+
+// Close modal on backdrop click
+document.getElementById('archive-modal').addEventListener('click', function(e) {
+    if (e.target === this) this.classList.add('hidden');
+});
+</script>
+{% endblock %}

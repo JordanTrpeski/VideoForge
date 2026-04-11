@@ -333,6 +333,7 @@ app.jinja_env.globals['status_color'] = _status_color
 
 @app.route('/')
 def overview():
+    from database import get_active_alerts
     stats = _get_stats()
     jobs = get_all_jobs()
     review_jobs = [j for j in jobs if j.get('status') == 'review']
@@ -344,6 +345,7 @@ def overview():
                            review_jobs=review_jobs,
                            pipeline_running=pipeline_running,
                            pipeline_job_id=pipeline_job_id,
+                           active_alerts=get_active_alerts(),
                            active='overview')
 
 
@@ -889,6 +891,30 @@ def api_test_prompt():
         return jsonify({'error': str(exc)}), 500
 
 
+@app.route('/api/check-similarity', methods=['POST'])
+def api_check_similarity():
+    """
+    Check a new topic for similarity against existing jobs and topic_bank.
+    Called by the New Job form before submission.
+
+    Request JSON: {topic: str}
+    Response JSON: {checked, similarity_score, similar_topic, similar_job_id,
+                    similar_source, angle_suggestion, warning}
+    """
+    data  = request.get_json(silent=True) or {}
+    topic = str(data.get('topic', '')).strip()
+    if not topic:
+        return jsonify({'error': 'topic is required'}), 400
+    try:
+        from modules.similarity_engine import check_similarity
+        config = _load_config()
+        result = check_similarity(topic, config)
+        return jsonify(result)
+    except Exception as exc:
+        logger.error(f"api_check_similarity error: {exc}", exc_info=True)
+        return jsonify({'error': str(exc)}), 500
+
+
 @app.route('/api/refresh-analytics', methods=['POST'])
 def api_refresh_analytics():
     """Manually trigger an analytics pull for all posted jobs."""
@@ -939,6 +965,173 @@ def reauth_tiktok():
     except Exception as exc:
         flash(f'TikTok re-auth failed: {exc}', 'error')
     return redirect(url_for('health'))
+
+
+# ---------------------------------------------------------------------------
+# Research — Phase 11.v1.B/D
+# ---------------------------------------------------------------------------
+
+def _research_scan_context(config: dict) -> dict:
+    """Build shared context for the trends page."""
+    from database import get_active_alerts, get_trend_scans, count_scans_since
+    from datetime import datetime, timedelta
+
+    rc          = config.get('research', {})
+    now         = datetime.utcnow()
+    hour_ago    = (now - timedelta(hours=1)).isoformat()
+    day_ago     = (now - timedelta(hours=24)).isoformat()
+    history     = get_trend_scans(limit=50)
+
+    return {
+        'active_alerts':  get_active_alerts(),
+        'scan_history':   history,
+        'last_scan':      history[0] if history else None,
+        'scans_today':    count_scans_since(day_ago),
+        'scans_hour':     count_scans_since(hour_ago),
+        'safe_per_hour':  rc.get('safe_scans_per_hour', 5),
+        'safe_per_day':   rc.get('safe_scans_per_day', 15),
+    }
+
+
+@app.route('/research/trends')
+def research_trends():
+    config = _load_config()
+    ctx    = _research_scan_context(config)
+    return render_template('trends.html', active='trends', **ctx)
+
+
+@app.route('/research/trends/scan', methods=['POST'])
+def research_trends_scan():
+    """Trigger an on-demand trend scan from the dashboard."""
+    config = _load_config()
+    try:
+        from modules.trend_monitor import run_scan
+        result = run_scan(config)
+        if result.get('blocked'):
+            flash(f"Scan blocked: {result['reason']}", 'warning')
+        elif result['success']:
+            flash(
+                f"Scan complete — {result['topics_found']} spike(s) found, "
+                f"{result['new_alerts']} alert(s) created.",
+                'success' if result['new_alerts'] > 0 else 'info',
+            )
+        else:
+            flash(f"Scan failed: {result.get('reason', 'unknown error')}", 'error')
+    except Exception as exc:
+        logger.error(f"research_trends_scan error: {exc}", exc_info=True)
+        flash(f"Scan error: {exc}", 'error')
+    return redirect(url_for('research_trends'))
+
+
+@app.route('/research/alerts/<int:alert_id>/dismiss', methods=['POST'])
+def dismiss_alert_route(alert_id):
+    from database import dismiss_alert
+    dismiss_alert(alert_id)
+    flash('Alert dismissed.', 'success')
+    return redirect(request.referrer or url_for('research_trends'))
+
+
+@app.route('/research/alerts/<int:alert_id>/fast-track', methods=['POST'])
+def fast_track_alert(alert_id):
+    """Create a job from a priority alert and start the pipeline in background."""
+    from database import get_active_alerts, link_alert_to_job
+
+    config = _load_config()
+    alerts = get_active_alerts()
+    alert  = next((a for a in alerts if a['id'] == alert_id), None)
+
+    if not alert:
+        flash(f'Alert {alert_id} not found or no longer active.', 'error')
+        return redirect(url_for('research_trends'))
+
+    topic  = alert.get('reframed_angle') or alert['topic']
+    bucket = alert.get('bucket', 'elec')
+    jid    = get_next_job_id()
+
+    create_job(job_id=jid, topic=topic, bucket=bucket, hook_style='shocking_fact')
+    link_alert_to_job(alert_id, jid)
+
+    threading.Thread(
+        target=_run_pipeline_thread,
+        args=(jid, config),
+        daemon=True,
+    ).start()
+
+    flash(f'Job {jid} fast-tracked — pipeline running in background.', 'success')
+    logger.info(f"[JOB {jid}] Fast-tracked from alert {alert_id} — topic: '{topic}'")
+    return redirect(url_for('overview'))
+
+
+@app.route('/research/topics')
+def research_topics():
+    from database import get_topics
+    show_archived = request.args.get('archived', '0') == '1'
+    topics = get_topics(include_archived=show_archived)
+    return render_template(
+        'topics.html',
+        active='topics',
+        topics=topics,
+        show_archived=show_archived,
+    )
+
+
+@app.route('/research/topics/add', methods=['POST'])
+def research_topics_add():
+    from database import insert_topic
+    topic  = request.form.get('topic', '').strip()
+    bucket = request.form.get('bucket', '').strip()
+    notes  = request.form.get('notes', '').strip()
+    if not topic:
+        flash('Topic text is required.', 'error')
+        return redirect(url_for('research_topics'))
+    insert_topic(topic=topic, bucket=bucket, notes=notes)
+    flash(f'Topic added: \u201c{topic}\u201d', 'success')
+    return redirect(url_for('research_topics'))
+
+
+@app.route('/research/topics/<int:topic_id>/archive', methods=['POST'])
+def research_topics_archive(topic_id):
+    from database import archive_topic
+    reason = request.form.get('reason', '')
+    archive_topic(topic_id=topic_id, reason=reason)
+    flash('Topic archived.', 'success')
+    return redirect(request.referrer or url_for('research_topics'))
+
+
+@app.route('/research/topics/<int:topic_id>/unarchive', methods=['POST'])
+def research_topics_unarchive(topic_id):
+    from database import unarchive_topic
+    unarchive_topic(topic_id=topic_id)
+    flash('Topic restored.', 'success')
+    return redirect(request.referrer or url_for('research_topics'))
+
+
+@app.route('/research/topics/<int:topic_id>/delete', methods=['POST'])
+def research_topics_delete(topic_id):
+    from database import delete_topic
+    delete_topic(topic_id=topic_id)
+    flash('Topic deleted.', 'success')
+    return redirect(request.referrer or url_for('research_topics'))
+
+
+@app.route('/research/topics/<int:topic_id>/queue', methods=['POST'])
+def research_topics_queue(topic_id):
+    """Add a topic bank entry to the job queue."""
+    from database import get_topics
+    topics = get_topics(include_archived=True)
+    t = next((x for x in topics if x['id'] == topic_id), None)
+    if not t:
+        flash('Topic not found.', 'error')
+        return redirect(url_for('research_topics'))
+    jid = get_next_job_id()
+    create_job(
+        job_id=jid,
+        topic=t['topic'],
+        bucket=t.get('bucket') or 'elec',
+        hook_style='shocking_fact',
+    )
+    flash(f'Job {jid} added to queue from topic bank.', 'success')
+    return redirect(url_for('research_topics'))
 
 
 # ---------------------------------------------------------------------------

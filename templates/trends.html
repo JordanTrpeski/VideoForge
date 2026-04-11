@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}Trend Scanner — VideoForge{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-xl font-semibold text-slate-100">Trend Scanner</h1>
+        <p class="text-xs mt-0.5" style="color:var(--muted)">Google Trends monitoring for engineering topics</p>
+    </div>
+    <form method="POST" action="/research/trends/scan">
+        <button type="submit" class="btn btn-primary">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            Scan now
+        </button>
+    </form>
+</div>
+
+<!-- Scan status card -->
+<div class="card rounded-xl p-4 mb-6 flex flex-wrap gap-6 items-center">
+    <div>
+        <div class="text-xs mb-0.5" style="color:var(--muted)">Last scan</div>
+        <div class="text-sm font-medium text-slate-100">
+            {% if last_scan %}{{ last_scan.scanned_at[:16] }}{% else %}Never{% endif %}
+        </div>
+    </div>
+    {% if last_scan %}
+    <div>
+        <div class="text-xs mb-0.5" style="color:var(--muted)">Results</div>
+        <div class="text-sm font-medium text-slate-100">
+            {{ last_scan.topics_found }} spike{% if last_scan.topics_found != 1 %}s{% endif %} found,
+            {{ last_scan.new_alerts }} alert{% if last_scan.new_alerts != 1 %}s{% endif %} created
+        </div>
+    </div>
+    {% endif %}
+    <div>
+        <div class="text-xs mb-0.5" style="color:var(--muted)">Scans today</div>
+        <div class="text-sm font-medium {% if scans_today >= safe_per_day %}text-red-400{% elif scans_today >= safe_per_day * 0.8 %}text-amber-400{% else %}text-slate-100{% endif %}">
+            {{ scans_today }} / {{ safe_per_day }}
+        </div>
+    </div>
+    <div>
+        <div class="text-xs mb-0.5" style="color:var(--muted)">Scans this hour</div>
+        <div class="text-sm font-medium {% if scans_hour >= safe_per_hour %}text-red-400{% else %}text-slate-100{% endif %}">
+            {{ scans_hour }} / {{ safe_per_hour }}
+        </div>
+    </div>
+</div>
+
+<!-- Active alerts -->
+<h2 class="text-sm font-semibold text-slate-100 mb-3">
+    Active alerts
+    <span class="ml-2 badge badge-amber">{{ active_alerts|length }}</span>
+</h2>
+
+{% if active_alerts %}
+<div class="card rounded-xl overflow-hidden mb-6">
+    <table class="tbl w-full">
+        <thead>
+            <tr>
+                <th class="text-left">Topic / Reframed angle</th>
+                <th class="text-left">Bucket</th>
+                <th class="text-right">Spike</th>
+                <th class="text-right">Fit</th>
+                <th class="text-left">Expires</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for a in active_alerts %}
+            <tr>
+                <td>
+                    <div class="font-medium text-slate-100">{{ a.topic }}</div>
+                    {% if a.reframed_angle %}
+                    <div class="text-xs mt-0.5 text-blue-400">{{ a.reframed_angle }}</div>
+                    {% endif %}
+                    {% if a.hook_suggestion %}
+                    <div class="text-xs mt-0.5" style="color:var(--muted)">Hook: {{ a.hook_suggestion }}</div>
+                    {% endif %}
+                </td>
+                <td><span class="badge badge-gray">{{ a.bucket }}</span></td>
+                <td class="text-right font-mono text-amber-400">{{ "%.0f"|format(a.spike_percent) }}%</td>
+                <td class="text-right">
+                    <span class="font-semibold {% if a.channel_fit >= 9 %}text-green-400{% elif a.channel_fit >= 7 %}text-blue-400{% else %}text-amber-400{% endif %}">
+                        {{ a.channel_fit }}/10
+                    </span>
+                </td>
+                <td class="text-xs" style="color:var(--muted)">{{ a.expires_at[:16] if a.expires_at else '—' }}</td>
+                <td class="text-right">
+                    <div class="flex gap-2 justify-end">
+                        <form method="POST" action="/research/alerts/{{ a.id }}/fast-track">
+                            <button type="submit" class="btn btn-success" style="padding:4px 10px;font-size:12px">
+                                Fast-track
+                            </button>
+                        </form>
+                        <form method="POST" action="/research/alerts/{{ a.id }}/dismiss">
+                            <button type="submit" class="btn btn-ghost" style="padding:4px 10px;font-size:12px">
+                                Dismiss
+                            </button>
+                        </form>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="card rounded-xl p-8 text-center mb-6" style="color:var(--muted)">
+    No active alerts. Click "Scan now" to check Google Trends.
+</div>
+{% endif %}
+
+<!-- Scan history -->
+<h2 class="text-sm font-semibold text-slate-100 mb-3">Scan history</h2>
+
+{% if scan_history %}
+<div class="card rounded-xl overflow-hidden">
+    <table class="tbl w-full">
+        <thead>
+            <tr>
+                <th class="text-left">Date / Time</th>
+                <th class="text-left">Buckets scanned</th>
+                <th class="text-right">Spikes found</th>
+                <th class="text-right">Alerts created</th>
+                <th class="text-left">Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in scan_history %}
+            <tr>
+                <td class="font-mono text-xs text-slate-300">{{ s.scanned_at[:16] }}</td>
+                <td class="text-xs" style="color:var(--muted)">{{ s.buckets_scanned or '—' }}</td>
+                <td class="text-right">{{ s.topics_found }}</td>
+                <td class="text-right">
+                    {% if s.new_alerts > 0 %}
+                    <span class="text-amber-400 font-semibold">{{ s.new_alerts }}</span>
+                    {% else %}
+                    <span style="color:var(--muted)">0</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <span class="badge {% if s.status == 'complete' %}badge-green{% elif s.status == 'blocked' %}badge-amber{% else %}badge-red{% endif %}">
+                        {{ s.status }}
+                    </span>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="card rounded-xl p-8 text-center" style="color:var(--muted)">
+    No scan history yet. Run your first scan above.
+</div>
+{% endif %}
+{% endblock %}
