@@ -693,23 +693,22 @@ def api_health():
             results['claude'] = {'status': 'error', 'label': str(exc)[:100], 'latency_ms': None}
 
     # --- ElevenLabs ---
+    # Uses /v1/voices (requires only the voices:read scope).
+    # /v1/user/subscription requires user_read which most API keys lack.
     key = os.getenv('ELEVENLABS_API_KEY', '')
     if not key:
         results['elevenlabs'] = {'status': 'no_key', 'label': 'ELEVENLABS_API_KEY not set', 'latency_ms': None}
     else:
         try:
             t0 = time.time()
-            r = req.get('https://api.elevenlabs.io/v1/user/subscription',
+            r = req.get('https://api.elevenlabs.io/v1/voices',
                         headers={'xi-api-key': key}, timeout=8)
             ms = round((time.time() - t0) * 1000)
             if r.status_code == 200:
-                data = r.json()
-                remaining = data.get('character_limit', 0) - data.get('character_count', 0)
-                results['elevenlabs'] = {
-                    'status': 'ok',
-                    'label': f'OK — {remaining:,} chars remaining',
-                    'latency_ms': ms
-                }
+                voice_count = len(r.json().get('voices', []))
+                voice_id    = os.getenv('ELEVENLABS_VOICE_ID', '').strip()
+                detail      = f'{voice_count} voices available' + (f', voice ID set' if voice_id else ', voice ID not set yet')
+                results['elevenlabs'] = {'status': 'ok', 'label': f'OK — {detail}', 'latency_ms': ms}
             else:
                 results['elevenlabs'] = {'status': 'error', 'label': f'HTTP {r.status_code}', 'latency_ms': ms}
         except Exception as exc:
@@ -725,11 +724,19 @@ def api_health():
             r = req.get('https://cloud.leonardo.ai/api/rest/v1/me',
                         headers={'authorization': f'Bearer {key}'}, timeout=8)
             ms = round((time.time() - t0) * 1000)
-            results['leonardo'] = {
-                'status': 'ok' if r.status_code == 200 else 'error',
-                'label': f'OK — {ms} ms' if r.status_code == 200 else f'HTTP {r.status_code}',
-                'latency_ms': ms if r.status_code == 200 else None,
-            }
+            if r.status_code == 200:
+                details  = r.json().get('user_details', [{}])[0]
+                api_paid = details.get('apiPaidTokens', 0) or 0
+                sub_tok  = details.get('subscriptionTokens', 0) or 0
+                total    = api_paid + sub_tok
+                slots    = details.get('apiConcurrencySlots', '?')
+                results['leonardo'] = {
+                    'status': 'ok',
+                    'label': f'OK — {total:,} tokens ({api_paid:,} paid + {sub_tok} subscription), {slots} concurrency slots',
+                    'latency_ms': ms,
+                }
+            else:
+                results['leonardo'] = {'status': 'error', 'label': f'HTTP {r.status_code}', 'latency_ms': ms}
         except Exception as exc:
             results['leonardo'] = {'status': 'error', 'label': str(exc)[:100], 'latency_ms': None}
 
