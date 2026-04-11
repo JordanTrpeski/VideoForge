@@ -94,5 +94,22 @@
     "level": "DEBUG",
     "max_log_size_mb": 50,
     "keep_logs_days": 30
+  },
+
+  "research": {
+    "priority_alert_threshold": 150,
+    "priority_alert_fit_minimum": 7.0,
+    "fast_track_window_hours": 48,
+    "safe_scans_per_hour": 5,
+    "safe_scans_per_day": 15,
+    "scan_on_startup": true,
+    "scan_on_startup_cooldown_hours": 2,
+    "notify_email": "",
+    "seed_keywords": {
+      "elec": ["electrical engineering", "battery", "circuit", "power grid", "electronics failure"],
+      "infra": ["bridge engineering", "building collapse", "construction failure", "dam", "skyscraper"],
+      "vehicle": ["car engineering", "aircraft failure", "electric vehicle", "train derailment", "engine"],
+      "flaw": ["engineering failure", "design flaw", "product recall", "structural failure", "engineering disaster"]
+    }
   }
 }

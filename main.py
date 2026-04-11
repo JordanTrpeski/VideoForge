@@ -405,6 +405,191 @@ def cmd_batch(args) -> None:
     print()
 
 
+def cmd_scan_trends(args) -> None:
+    """
+    Run a Google Trends scan immediately, create priority alerts for any
+    engineering topics spiking above the configured threshold.
+
+    Args:
+        args: Parsed argparse namespace (no specific fields required).
+    """
+    from database import init_db
+    from modules.trend_monitor import run_scan
+
+    config = load_config()
+    init_db()
+
+    print("\nVideoForge — running trend scan")
+    print("=" * 50)
+
+    result = run_scan(config)
+
+    if result.get('blocked'):
+        print(f"\nSCAN BLOCKED: {result['reason']}")
+        sys.exit(0)
+
+    if not result['success']:
+        print(f"\nSCAN FAILED: {result.get('reason', 'unknown error')}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Spikes found above threshold : {result['topics_found']}")
+    print(f"Priority alerts created      : {result['new_alerts']}")
+
+    if result['alerts']:
+        print("\nNew alerts:")
+        for a in result['alerts']:
+            print(f"  [{a['channel_fit']}/10] {a['topic']}")
+            print(f"    Reframed: {a['reframed_angle']}")
+            print(f"    Hook:     {a['hook_suggestion']}")
+            print(f"    Spike:    {a['spike_percent']:.0f}%")
+            print(f"    Expires:  {a['expires_at']}")
+    else:
+        print("\nNo new alerts created (no spikes above threshold or fit minimum).")
+
+    print()
+
+
+def cmd_list_alerts(args) -> None:
+    """
+    Print all active (non-expired, non-dismissed) priority alerts.
+
+    Args:
+        args: Parsed argparse namespace (no specific fields required).
+    """
+    from database import init_db, get_active_alerts
+    init_db()
+
+    alerts = get_active_alerts()
+    if not alerts:
+        print("No active priority alerts.")
+        return
+
+    print(f"\n{'ID':<5} {'FIT':<5} {'SPIKE':<8} {'EXPIRES':<20} TOPIC")
+    print("-" * 80)
+    for a in alerts:
+        expires = (a.get('expires_at') or '')[:16]
+        print(
+            f"{a['id']:<5} {a['channel_fit']:<5.1f} "
+            f"{a['spike_percent']:<8.0f} {expires:<20} {a['topic']}"
+        )
+        if a.get('reframed_angle'):
+            print(f"       Angle: {a['reframed_angle']}")
+    print()
+
+
+def cmd_fast_track(args) -> None:
+    """
+    Fast-track a priority alert: create a job and start the pipeline immediately.
+
+    Args:
+        args: Parsed argparse namespace with alert_id attribute.
+    """
+    from database import init_db, get_active_alerts, create_job, get_next_job_id, link_alert_to_job
+    import threading
+
+    config = load_config()
+    init_db()
+
+    alerts = get_active_alerts()
+    alert = next((a for a in alerts if a['id'] == args.alert_id), None)
+
+    if not alert:
+        print(
+            f"ERROR: Alert {args.alert_id} not found or no longer active.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    job_id = get_next_job_id()
+    bucket = alert.get('bucket', 'elec')
+    topic  = alert.get('reframed_angle') or alert['topic']
+
+    create_job(job_id=job_id, topic=topic, bucket=bucket, hook_style='shocking_fact')
+    link_alert_to_job(alert['id'], job_id)
+
+    print(f"\nJob {job_id} created from alert {args.alert_id}")
+    print(f"Topic:  {topic}")
+    print(f"Bucket: {bucket}")
+    print("\nRunning pipeline now (stops at review gate)...")
+    print("=" * 50)
+
+    from scheduler import run_pipeline_sync
+    ok = run_pipeline_sync(job_id, config)
+
+    if ok:
+        print(f"\nJob {job_id} is now at 'review' status.")
+        print("Open the dashboard to approve and upload.")
+    else:
+        print(f"\nPipeline failed for job {job_id}. Check logs/errors.log.")
+        sys.exit(1)
+    print()
+
+
+def cmd_add_topic(args) -> None:
+    """
+    Add a topic to the topic bank without scoring it.
+
+    Args:
+        args: Parsed argparse namespace with topic and bucket attributes.
+    """
+    from database import init_db, insert_topic
+    init_db()
+
+    topic_id = insert_topic(
+        topic=args.topic,
+        bucket=args.bucket or '',
+        notes=args.notes or '',
+    )
+    print(f"\nTopic added to bank — ID: {topic_id}")
+    print(f"  Topic:  {args.topic}")
+    print(f"  Bucket: {args.bucket or '(not set)'}")
+    print()
+
+
+def cmd_archive_topic(args) -> None:
+    """
+    Archive a topic in the topic bank.
+
+    Args:
+        args: Parsed argparse namespace with id and reason attributes.
+    """
+    from database import init_db, archive_topic
+    init_db()
+
+    archive_topic(topic_id=args.id, reason=args.reason or '')
+    print(f"\nTopic {args.id} archived.")
+    if args.reason:
+        print(f"  Reason: {args.reason}")
+    print()
+
+
+def cmd_export_topics(args) -> None:
+    """
+    Export the topic bank to a CSV file.
+
+    Args:
+        args: Parsed argparse namespace with output attribute.
+    """
+    import csv
+    from database import init_db, get_topics
+    init_db()
+
+    topics = get_topics(include_archived=True)
+    output_path = args.output or 'topics_export.csv'
+
+    with open(output_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            'id', 'topic', 'bucket', 'score', 'status', 'hook_suggestion',
+            'notes', 'archived', 'archived_at', 'archive_reason', 'added_at',
+        ])
+        writer.writeheader()
+        for t in topics:
+            writer.writerow({k: t.get(k, '') for k in writer.fieldnames})
+
+    print(f"\nExported {len(topics)} topics to: {output_path}")
+    print()
+
+
 def cmd_test_connections(args) -> None:
     """
     Run the API connection test suite.
@@ -552,12 +737,46 @@ def build_parser() -> argparse.ArgumentParser:
         help='Number of jobs to process (default: batch_size_per_week from config.json)'
     )
 
+    # scan-trends
+    subparsers.add_parser('scan-trends', help='Run a Google Trends scan and create priority alerts')
+
+    # list-alerts
+    subparsers.add_parser('list-alerts', help='Show all active priority alerts')
+
+    # fast-track
+    p_ft = subparsers.add_parser('fast-track', help='Fast-track a priority alert through the pipeline')
+    p_ft.add_argument('--alert-id', type=int, required=True, metavar='ID',
+                      help='Priority alert ID (from list-alerts)')
+
+    # add-topic
+    p_add_topic = subparsers.add_parser('add-topic', help='Add a topic to the topic bank')
+    p_add_topic.add_argument('topic', type=str, help='Topic text')
+    p_add_topic.add_argument('--bucket', type=str, choices=['elec', 'infra', 'vehicle', 'flaw'],
+                             default='', help='Content bucket')
+    p_add_topic.add_argument('--notes', type=str, default='', help='Optional notes')
+
+    # archive-topic
+    p_arch = subparsers.add_parser('archive-topic', help='Archive a topic in the topic bank')
+    p_arch.add_argument('--id', type=int, required=True, metavar='ID', help='Topic bank ID')
+    p_arch.add_argument('--reason', type=str, default='', help='Archive reason')
+
+    # export-topics
+    p_export = subparsers.add_parser('export-topics', help='Export topic bank to CSV')
+    p_export.add_argument('--output', type=str, default='topics_export.csv',
+                          help='Output CSV file path')
+
     return parser
 
 
 COMMAND_MAP = {
     'test-connections':    cmd_test_connections,
     'batch':               cmd_batch,
+    'scan-trends':         cmd_scan_trends,
+    'list-alerts':         cmd_list_alerts,
+    'fast-track':          cmd_fast_track,
+    'add-topic':           cmd_add_topic,
+    'archive-topic':       cmd_archive_topic,
+    'export-topics':       cmd_export_topics,
     'generate-script':     cmd_generate_script,
     'generate-voice':      cmd_generate_voice,
     'generate-images':     cmd_generate_images,

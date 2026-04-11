@@ -1,1137 +1,761 @@
-# VideoForge — Master Project Brief for Claude Code
-## AI-Powered Automated Video Production System
+# VideoForge — Claude Code Instructions
+
+## Project Overview
+
+You are building VideoForge — an automated AI video production pipeline for an educational engineering YouTube and TikTok channel called "The Engineering Brief" (@HowThingsWorkEng). The owner has an electrical engineering background and creates faceless short-form videos (60–90 seconds) explaining how everyday engineering and technology works.
+
+The system takes a topic string and automatically produces a fully edited, captioned, SEO-tagged video ready to post on TikTok and YouTube Shorts. It runs locally on the owner's computer and is operated through a web dashboard at localhost:5000.
 
 ---
 
-## IMPORTANT — READ THIS FIRST
+## Build Instructions
 
-This document is the single source of truth for the VideoForge project. Every decision about architecture, naming, logging, error handling, and code style is defined here. Before writing any code, read this document in full. When in doubt, refer back here.
+### General rules
+- Build one phase at a time. Do not start the next phase until the current one passes its test
+- Every phase must have a clear pass condition — a command that proves it works
+- If a phase fails its test, fix it before moving on
+- Never hardcode API keys, model names, temperatures, or any tunable value — always read from config.json or .env
+- Always load .env with python-dotenv at the top of every file that needs API keys
+- Never log, print, or expose any value from .env
 
----
-
-## 1. Project Description
-
-VideoForge is a Python-based automated pipeline that takes a topic string and produces a fully edited, captioned, SEO-tagged short-form video ready to post on TikTok and YouTube Shorts. It is built for the channel **"The Engineering Brief"** (@HowThingsWorkEng) which publishes educational engineering explainer content.
-
-The system is designed to run on a personal computer (Windows/Mac/Linux), be operated through a web dashboard at localhost:5000, and produce 5 videos per week in a single Sunday batch session with minimal human involvement beyond a 15-minute quality review per video.
-
-**The owner has an electrical engineering background.** All content is educational, faceless, and AI-generated. No personal footage is used.
-
----
-
-## 2. Goals
-
-**Primary goal:** Produce 5 publish-ready videos per week automatically from a list of topics, post them to TikTok and YouTube Shorts, and generate passive income through YouTube AdSense and brand deals.
-
-**Secondary goals:**
-- Keep monthly running costs under $40
-- Make the system operable with zero coding knowledge after initial setup
-- Make every parameter editable through config.json without touching code
-- Make every failure diagnosable through logs without needing a developer
-
-**What this system is NOT:**
-- Not a content agency tool
-- Not multi-user
-- Not cloud-hosted (runs locally)
-- Not designed for any niche other than engineering education
+### Phase order
+Build in this exact sequence:
+1. Foundation — project structure, config, database, logger, connection test
+2. Script engine — Claude API → structured script JSON
+3. Voice engine — ElevenLabs → MP3
+4. Image engine — Leonardo.AI → image set
+5. Assembly engine — MoviePy → raw video
+6. Caption engine — Whisper → captioned video
+7. Metadata + thumbnail engine — Claude API → SEO data + PIL → thumbnail
+8. Upload engine — YouTube Data API v3 + TikTok Content Posting API
+9. Web dashboard — Flask app at localhost:5000
+10. Automation — APScheduler batch runs + Make.com webhook + analytics pull
 
 ---
 
-## 3. Channel Identity
+## API Keys Available Right Now
 
-| Field | Value |
-|---|---|
-| Channel name | The Engineering Brief |
-| YouTube handle | @HowThingsWorkEng |
-| TikTok handle | @HowThingsWorkEng |
-| Niche | Engineering education — how everyday things work |
-| Content buckets | Electrical, Infrastructure, Vehicles, The Flaw |
-| Video length | 60–90 seconds |
-| Format | Faceless — AI voiceover + AI images + captions |
-| Posting frequency | 5 videos per week |
-| Primary monetization | YouTube AdSense (Macedonia eligible) |
-| Secondary monetization | Brand deals, TikTok LIVE gifts |
+Only the Anthropic API key is available at this stage. All other keys will be added when their phase is reached. Write the code so it checks if a key exists before using it and skips gracefully if it does not.
 
----
-
-## 4. Tech Stack
-
-| Layer | Technology | Version |
-|---|---|---|
-| Language | Python | 3.11+ |
-| Web framework | Flask | Latest |
-| Database | SQLite via sqlite3 | Built-in |
-| Video editing | MoviePy | Latest |
-| Speech-to-text | OpenAI Whisper | Latest |
-| Task scheduling | APScheduler | Latest |
-| HTTP requests | requests | Latest |
-| Audio processing | pydub | Latest |
-| Image processing | Pillow | Latest |
-| Environment vars | python-dotenv | Latest |
-| Google API | google-api-python-client | Latest |
-
-**External APIs:**
-| Service | Purpose | Cost |
-|---|---|---|
-| Anthropic Claude API | Script generation, metadata generation | ~$5/mo |
-| ElevenLabs | AI voiceover | $5–22/mo |
-| Leonardo.AI | AI image generation | $10/mo |
-| Pexels API | Stock B-roll footage fallback | Free |
-| YouTube Data API v3 | Video upload | Free |
-| YouTube Analytics API | Performance data | Free |
-| TikTok Content Posting API | Video upload | Free |
-
----
-
-## 5. Project File Structure
-
-Every file must live in this exact structure. Do not create files outside these locations.
-
+Current .env:
 ```
-videoforge/
-│
-├── CLAUDE.md                    ← THIS FILE — master project brief
-├── README.md                    ← Setup instructions for humans
-├── requirements.txt             ← All Python dependencies
-├── config.json                  ← ALL editable parameters (no code needed)
-├── .env                         ← API keys — NEVER commit, NEVER log
-├── .gitignore                   ← Must include .env, output/, logs/
-│
-├── main.py                      ← CLI entry point
-├── app.py                       ← Flask dashboard (localhost:5000)
-├── database.py                  ← SQLite schema + all DB operations
-├── scheduler.py                 ← APScheduler batch automation
-│
-├── modules/                     ← One file per pipeline stage
-│   ├── __init__.py
-│   ├── script_engine.py         ← Stage 1: Claude API → script JSON
-│   ├── voice_engine.py          ← Stage 2: ElevenLabs → MP3
-│   ├── image_engine.py          ← Stage 3: Leonardo.AI → images
-│   ├── broll_engine.py          ← Stage 3b: Pexels → B-roll fallback
-│   ├── assembly_engine.py       ← Stage 4: MoviePy → raw video
-│   ├── caption_engine.py        ← Stage 5: Whisper → captioned video
-│   ├── thumbnail_engine.py      ← Stage 6: PIL → thumbnail image
-│   ├── metadata_engine.py       ← Stage 6b: Claude API → SEO data
-│   ├── upload_engine.py         ← Stage 7: TikTok + YouTube upload
-│   └── analytics_engine.py      ← Stage 8: Pull performance stats
-│
-├── prompts/                     ← Plain text prompt templates
-│   ├── script_prompt.txt        ← Master script generation prompt
-│   └── metadata_prompt.txt      ← SEO metadata generation prompt
-│
-├── assets/                      ← Static files that never change
-│   ├── music/                   ← Royalty-free .mp3 background tracks
-│   ├── fonts/                   ← Caption font .ttf files
-│   └── thumbnail_template/      ← Overlay PNG for thumbnails
-│
-├── output/                      ← All generated files (gitignored)
-│   ├── scripts/                 ← 001.json, 002.json ...
-│   ├── audio/                   ← 001.mp3, 001_hook.mp3 ...
-│   ├── images/                  ← 001/img_01.png ... img_08.png
-│   ├── videos/                  ← 001_raw.mp4, 001_captioned.mp4
-│   ├── thumbnails/              ← 001.jpg ...
-│   └── metadata/                ← 001.json (title, desc, hashtags)
-│
-├── logs/                        ← All log files (gitignored)
-│   ├── main.log                 ← Combined log for all modules
-│   ├── script_engine.log
-│   ├── voice_engine.log
-│   ├── image_engine.log
-│   ├── assembly_engine.log
-│   ├── caption_engine.log
-│   ├── thumbnail_engine.log
-│   ├── metadata_engine.log
-│   ├── upload_engine.log
-│   ├── analytics_engine.log
-│   └── errors.log               ← Errors only — all modules write here
-│
-├── templates/                   ← Flask HTML templates
-│   ├── base.html
-│   ├── dashboard.html
-│   ├── job_detail.html
-│   ├── config_editor.html
-│   └── stats.html
-│
-└── tests/                       ← One test file per module
-    ├── test_connections.py      ← Ping all 4 APIs
-    ├── test_script_engine.py
-    ├── test_voice_engine.py
-    ├── test_image_engine.py
-    ├── test_assembly_engine.py
-    ├── test_caption_engine.py
-    └── test_upload_engine.py
+ANTHROPIC_API_KEY=sk-ant-...        ← available now
+ELEVENLABS_API_KEY=                 ← leave blank, Phase 3
+ELEVENLABS_VOICE_ID=                ← leave blank, Phase 3
+LEONARDO_API_KEY=                   ← leave blank, Phase 4
+PEXELS_API_KEY=                     ← leave blank, Phase 4
+TIKTOK_CLIENT_KEY=                  ← leave blank, Phase 8
+TIKTOK_CLIENT_SECRET=               ← leave blank, Phase 8
+TIKTOK_ACCESS_TOKEN=                ← leave blank, Phase 8
+YOUTUBE_CLIENT_SECRETS_FILE=client_secrets.json  ← leave blank, Phase 8
+FLASK_SECRET_KEY=changethis
+FLASK_PORT=5000
 ```
 
 ---
 
-## 6. Logging Requirements
+## Logging Instructions
 
-**This is non-negotiable.** Every module must log every significant action, every API call, every error, and every file it creates. The owner must be able to open a log file and understand exactly what happened and where it failed without reading code.
-
-### Logging Standard
-
-Every module uses this exact logging setup at the top of the file:
+Every module must have its own log file plus write to a shared main.log and errors.log. Use this exact setup at the top of every module:
 
 ```python
 import logging
 import os
-from datetime import datetime
 
 def setup_logger(module_name: str) -> logging.Logger:
-    """Set up dual logging: module-specific file + combined main.log + errors.log"""
-    
     os.makedirs('logs', exist_ok=True)
-    
     logger = logging.getLogger(module_name)
     logger.setLevel(logging.DEBUG)
-    
-    # Prevent duplicate handlers if function called multiple times
     if logger.handlers:
         return logger
-    
     formatter = logging.Formatter(
         '%(asctime)s | %(name)s | %(levelname)s | %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-    
-    # 1. Module-specific log file
-    module_handler = logging.FileHandler(f'logs/{module_name}.log')
-    module_handler.setLevel(logging.DEBUG)
-    module_handler.setFormatter(formatter)
-    
-    # 2. Combined main.log
-    main_handler = logging.FileHandler('logs/main.log')
-    main_handler.setLevel(logging.INFO)
-    main_handler.setFormatter(formatter)
-    
-    # 3. Errors-only log
-    error_handler = logging.FileHandler('logs/errors.log')
-    error_handler.setLevel(logging.ERROR)
-    error_handler.setFormatter(formatter)
-    
-    # 4. Console output
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-    
-    logger.addHandler(module_handler)
-    logger.addHandler(main_handler)
-    logger.addHandler(error_handler)
-    logger.addHandler(console_handler)
-    
+    for path, level in [
+        (f'logs/{module_name}.log', logging.DEBUG),
+        ('logs/main.log', logging.INFO),
+        ('logs/errors.log', logging.ERROR),
+    ]:
+        h = logging.FileHandler(path)
+        h.setLevel(level)
+        h.setFormatter(formatter)
+        logger.addHandler(h)
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(formatter)
+    logger.addHandler(console)
     return logger
 ```
 
-### What to Log
+Every module must log:
+- Start of job with job ID and topic
+- Every API call before it happens (endpoint, key parameters)
+- Every API response (success, response time)
+- Every file created (path, size in MB)
+- Stage completion with total elapsed time
+- All warnings (rate limits, slow responses, retries)
+- All errors with full traceback using exc_info=True
 
-Every module must log these events:
-
-```python
-# Starting a job
-logger.info(f"[JOB {job_id}] Starting {module_name} for topic: '{topic}'")
-
-# Before every API call
-logger.info(f"[JOB {job_id}] Calling ElevenLabs API — voice_id: {voice_id}, chars: {len(text)}")
-
-# After successful API call
-logger.info(f"[JOB {job_id}] ElevenLabs API call succeeded — response time: {elapsed:.2f}s")
-
-# Every file created
-logger.info(f"[JOB {job_id}] File created: {filepath} ({file_size_mb:.2f} MB)")
-
-# Every file read
-logger.debug(f"[JOB {job_id}] Loading file: {filepath}")
-
-# Config values used
-logger.debug(f"[JOB {job_id}] Config: stability={stability}, similarity={similarity}")
-
-# Stage completion
-logger.info(f"[JOB {job_id}] {module_name} COMPLETED in {elapsed:.1f}s")
-
-# Warnings (non-fatal)
-logger.warning(f"[JOB {job_id}] Image {i} took {elapsed:.1f}s — Leonardo.AI may be slow")
-
-# Errors (caught exceptions)
-logger.error(f"[JOB {job_id}] {module_name} FAILED: {str(e)}", exc_info=True)
-
-# API rate limits
-logger.warning(f"[JOB {job_id}] Rate limit hit — waiting {retry_after}s before retry")
+Log format for every line:
 ```
-
-### Log Format
-
-Every log line must include:
-- Timestamp: `2026-04-10 14:32:01`
-- Module name: `script_engine`
-- Level: `INFO` / `DEBUG` / `WARNING` / `ERROR`
-- Job ID: `[JOB 001]`
-- Human-readable message
-
-Example log output:
-```
-2026-04-10 14:32:01 | script_engine | INFO  | [JOB 001] Starting script_engine for topic: 'Why phone chargers get warm'
-2026-04-10 14:32:01 | script_engine | DEBUG | [JOB 001] Config: model=claude-sonnet-4-6, temperature=0.7, word_count=175
-2026-04-10 14:32:01 | script_engine | INFO  | [JOB 001] Calling Claude API — model: claude-sonnet-4-6
-2026-04-10 14:32:04 | script_engine | INFO  | [JOB 001] Claude API call succeeded — response time: 3.21s, tokens: 487
-2026-04-10 14:32:04 | script_engine | INFO  | [JOB 001] Script parsed — word_count: 182, visual_prompts: 8
-2026-04-10 14:32:04 | script_engine | INFO  | [JOB 001] File created: output/scripts/001.json (0.02 MB)
-2026-04-10 14:32:04 | script_engine | INFO  | [JOB 001] script_engine COMPLETED in 3.31s
+2026-04-10 14:32:01 | script_engine | INFO | [JOB 001] Calling Claude API — model: claude-sonnet-4-6
 ```
 
 ---
 
-## 7. Error Handling Requirements
+## Error Handling Instructions
 
-Every module must handle errors at three levels:
-
-### Level 1 — API errors (retry with backoff)
+### API calls — always retry with backoff
 ```python
 import time
 
-def call_with_retry(func, max_retries=3, backoff_seconds=5):
-    """Retry API calls with exponential backoff"""
+def call_with_retry(func, max_retries=3, backoff=5):
     for attempt in range(max_retries):
         try:
             return func()
-        except RateLimitError as e:
-            wait = backoff_seconds * (2 ** attempt)
-            logger.warning(f"Rate limit hit — waiting {wait}s (attempt {attempt+1}/{max_retries})")
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise
+            wait = backoff * (2 ** attempt)
+            logger.warning(f"Attempt {attempt+1} failed — retrying in {wait}s: {e}")
             time.sleep(wait)
-        except APIConnectionError as e:
-            wait = backoff_seconds * (2 ** attempt)
-            logger.warning(f"API connection error — waiting {wait}s (attempt {attempt+1}/{max_retries}): {e}")
-            time.sleep(wait)
-    raise Exception(f"API call failed after {max_retries} attempts")
 ```
 
-### Level 2 — Module errors (fail gracefully, update DB status)
+### Module functions — always return a result dict
+Every module's main run function must return this structure:
 ```python
-def run(job_id: str, config: dict) -> dict:
-    logger.info(f"[JOB {job_id}] Starting script_engine")
-    try:
-        # ... module logic ...
-        db.update_job_status(job_id, 'script_done')
-        logger.info(f"[JOB {job_id}] script_engine COMPLETED")
-        return {"success": True, "output_path": path}
-    except Exception as e:
-        logger.error(f"[JOB {job_id}] script_engine FAILED: {str(e)}", exc_info=True)
-        db.update_job_status(job_id, 'failed', error_message=str(e))
-        return {"success": False, "error": str(e)}
+# Success
+return {"success": True, "output_path": "/path/to/output"}
+
+# Failure
+return {"success": False, "error": "Human readable error message"}
 ```
 
-### Level 3 — Pipeline errors (stop pipeline, notify dashboard)
-If any module returns `{"success": False}`, the pipeline stops immediately. The job status is set to `failed` with the module name and error message. The dashboard shows the failure with a link to the relevant log file.
+### Pipeline — stop on first failure
+If any module returns success: False, the pipeline stops immediately. Update the job status in the database to "failed" with the module name and error message stored. Never silently continue past a failure.
 
 ---
 
-## 8. Code Style Requirements
+## Code Style Instructions
 
-Every file must follow these rules exactly:
-
-### File header (every .py file must start with this)
+### Every file must start with a header
 ```python
 """
 module_name.py
 ==============
-Brief description of what this module does.
+What this module does in one sentence.
 
 Input:  What it takes in
 Output: What it produces
 Logs:   logs/module_name.log
-
-Dependencies:
-    - external_library (purpose)
-    - another_library (purpose)
-
-Author: VideoForge
-Version: 1.0
 """
 ```
 
-### Function docstrings (every function must have one)
+### Every function must have a docstring
 ```python
 def generate_script(job_id: str, topic: str, config: dict) -> dict:
     """
     Generate a structured video script using Claude API.
-    
+
     Args:
-        job_id (str): Unique job identifier e.g. '001'
-        topic (str): Video topic e.g. 'Why phone chargers get warm'
-        config (dict): Loaded config.json contents
-    
+        job_id: Unique job identifier e.g. '001'
+        topic: Video topic e.g. 'Why phone chargers get warm'
+        config: Loaded config.json contents
+
     Returns:
-        dict: {
-            'success': bool,
-            'output_path': str,  # path to saved JSON if success
-            'error': str         # error message if failed
-        }
-    
-    Raises:
-        ValueError: If topic is empty
-        APIError: If Claude API call fails after retries
+        dict with 'success' bool and either 'output_path' or 'error'
     """
 ```
 
-### Type hints (all function signatures must have them)
-```python
-def assemble_video(
-    job_id: str,
-    audio_path: str,
-    images_dir: str,
-    music_path: str,
-    config: dict
-) -> dict:
-```
-
-### Constants (never hardcode values — use config or constants)
-```python
-# WRONG
-response = client.messages.create(model="claude-sonnet-4-6", max_tokens=1000)
-
-# CORRECT
-model = config['script']['model']
-max_tokens = config['script']['max_tokens']
-response = client.messages.create(model=model, max_tokens=max_tokens)
-```
-
-### Imports (grouped and ordered)
-```python
-# 1. Standard library
-import os
-import json
-import time
-from datetime import datetime
-from pathlib import Path
-
-# 2. Third-party libraries
-import anthropic
-import requests
-from dotenv import load_dotenv
-
-# 3. Local modules
-from database import update_job_status
-from utils.logger import setup_logger
-```
+### All functions must have type hints
+### Never hardcode any value that belongs in config.json
+### Group imports: stdlib first, third-party second, local third
 
 ---
 
-## 9. Database Schema
+## Database Instructions
+
+Use SQLite. All database operations go in database.py. The jobs table tracks every video through the pipeline:
 
 ```sql
--- jobs table: one row per video
 CREATE TABLE IF NOT EXISTS jobs (
-    id              TEXT PRIMARY KEY,       -- e.g. '001', '002'
-    topic           TEXT NOT NULL,          -- e.g. 'Why phone chargers get warm'
-    bucket          TEXT,                   -- elec / infra / vehicle / flaw
-    hook_style      TEXT,                   -- shocking_fact / wrong_assumption / nobody_talks
-    status          TEXT DEFAULT 'queued',  -- see status flow below
-    error_module    TEXT,                   -- which module failed
-    error_message   TEXT,                   -- what went wrong
-    script_path     TEXT,                   -- output/scripts/001.json
-    audio_path      TEXT,                   -- output/audio/001.mp3
-    images_dir      TEXT,                   -- output/images/001/
-    raw_video_path  TEXT,                   -- output/videos/001_raw.mp4
-    final_video_path TEXT,                  -- output/videos/001_captioned.mp4
-    thumbnail_path  TEXT,                   -- output/thumbnails/001.jpg
-    metadata_path   TEXT,                   -- output/metadata/001.json
-    tiktok_url      TEXT,                   -- published TikTok URL
-    youtube_url     TEXT,                   -- published YouTube URL
-    tiktok_video_id TEXT,
-    youtube_video_id TEXT,
-    duration_seconds REAL,                  -- audio duration
-    word_count      INTEGER,
-    created_at      TEXT DEFAULT (datetime('now')),
-    updated_at      TEXT DEFAULT (datetime('now'))
+    id                TEXT PRIMARY KEY,
+    topic             TEXT NOT NULL,
+    bucket            TEXT,
+    hook_style        TEXT,
+    status            TEXT DEFAULT 'queued',
+    error_module      TEXT,
+    error_message     TEXT,
+    script_path       TEXT,
+    audio_path        TEXT,
+    images_dir        TEXT,
+    raw_video_path    TEXT,
+    final_video_path  TEXT,
+    thumbnail_path    TEXT,
+    metadata_path     TEXT,
+    tiktok_url        TEXT,
+    youtube_url       TEXT,
+    duration_seconds  REAL,
+    word_count        INTEGER,
+    created_at        TEXT DEFAULT (datetime('now')),
+    updated_at        TEXT DEFAULT (datetime('now'))
 );
 
--- analytics table: performance data pulled from APIs
 CREATE TABLE IF NOT EXISTS analytics (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id          TEXT REFERENCES jobs(id),
-    platform        TEXT,                   -- tiktok / youtube
+    platform        TEXT,
     views           INTEGER DEFAULT 0,
     likes           INTEGER DEFAULT 0,
     comments        INTEGER DEFAULT 0,
     shares          INTEGER DEFAULT 0,
-    watch_time_avg  REAL,                   -- average watch time in seconds
+    watch_time_avg  REAL,
     pulled_at       TEXT DEFAULT (datetime('now'))
 );
 ```
 
-### Job Status Flow
+Status flow in order:
+queued → scripting → voiced → imaging → assembling → captioning → metadata → review → uploading → posted → failed
 
-```
-queued
-  → scripting       (script_engine running)
-  → voiced          (voice_engine running)
-  → imaging         (image_engine running)
-  → assembling      (assembly_engine running)
-  → captioning      (caption_engine running)
-  → metadata        (metadata + thumbnail running)
-  → review          ← HUMAN REVIEW GATE — nothing uploads until approved
-  → uploading       (upload_engine running)
-  → posted          (live on both platforms)
-  → failed          (any module failed — check error_module + error_message)
-```
+The review status is a manual gate. Nothing uploads until the owner clicks Approve in the dashboard.
 
 ---
 
-## 10. config.json — Complete Parameter Reference
+## Dashboard Instructions (Phase 9)
 
+Build a Flask web app at localhost:5000 with these 8 pages:
+
+**Overview (/)** — live pipeline status showing current job stage progress with colored dots (green=done, blue=running, gray=pending, red=failed), stat strip (total videos, posted this week, in queue, awaiting review), and a review gate card when a job needs approval with Approve and Reject buttons. Auto-refresh pipeline status every 5 seconds.
+
+**Job queue (/jobs)** — table of all jobs filterable by status badge. Clicking a job opens a detail page (/jobs/NNN) showing the full generated script, all 8 image prompts, metadata preview, HTML5 video player if the video exists, thumbnail preview, published URLs, and log lines filtered to that job ID. Failed jobs show the error module and message with a Retry from this stage button.
+
+**New job (/jobs/new)** — form with topic text input, bucket dropdown (Electrical / Infrastructure / Vehicles / The Flaw), hook style dropdown (Shocking fact / Wrong assumption / Nobody talks about this), and run mode dropdown (Add to queue / Run now / Script only). Also a bulk add textarea for pasting multiple topics at once.
+
+**Config editor (/config)** — editable form showing every parameter from config.json grouped into sections: Script, Voice, Visuals, Video assembly, Captions, Thumbnail, Posting. Each parameter shows the name in monospace, an input field with the current value, and a short note on what it does. Save button writes to config.json. Reset button restores defaults with a confirmation prompt.
+
+**Prompt editor (/prompts)** — two textareas showing the full contents of prompts/script_prompt.txt and prompts/metadata_prompt.txt. Save button for each. Test button runs the prompt against the last job topic and shows a preview of the output below. A reference table shows all available template variables and their current values.
+
+**Log viewer (/logs)** — live log output with filter controls for level (INFO / WARNING / ERROR / DEBUG), module dropdown, and job ID text filter. Color coded: INFO=blue, WARNING=amber, ERROR=red, DEBUG=gray. Auto-refresh toggle updates every 3 seconds. Quick access button for errors.log only.
+
+**Analytics (/analytics)** — stat strip with total views, subscribers, estimated revenue, and average completion rate. Top performing videos table sorted by views. Performance by content bucket as a horizontal bar chart so the owner can see which bucket gets the most views. Platform comparison between YouTube and TikTok.
+
+**API health (/health)** — one row per API (Claude, ElevenLabs, Leonardo.AI, Pexels, YouTube, TikTok) showing status badge, details like credits remaining and token expiry, latency in ms, and a Test button that pings the API live. A Run full connection test button at the bottom. A Re-auth button appears next to TikTok when its token has expired.
+
+---
+
+## Channel and Account Details
+
+- Channel name: The Engineering Brief
+- YouTube handle: @HowThingsWorkEng
+- TikTok handle: @HowThingsWorkEng
+- Content: Educational engineering — how everyday things work
+- Content buckets: Electrical, Infrastructure, Vehicles, The Flaw
+- Target video length: 60–90 seconds
+- Format: Faceless — AI voiceover + AI images + burn-in captions
+- Primary monetization: YouTube AdSense
+- Owner location: Skopje, Macedonia
+- Posting target: 5 videos per week
+
+---
+
+## Script Format
+
+Every generated script must follow this exact structure:
+
+- HOOK (0–3 sec): One sentence. Surprising fact or challenge a wrong belief. Under 15 words.
+- SETUP (3–15 sec): What most people think. 2–3 sentences.
+- EXPLANATION (15–55 sec): The real engineering answer. Simple language. One analogy.
+- PAYOFF (55–75 sec): The mind-blowing implication. 1–2 sentences.
+- CTA (optional): Follow for more style, 3–5 seconds.
+
+The Claude API call for script generation must return structured JSON with these keys:
+hook, setup, explanation, payoff, cta, full_script, visual_brief (array of 8 image prompts), metadata_hints
+
+---
+
+## Content Rules
+
+These protect monetization and must be enforced in the script prompt:
+- All content must be original — no copying from other sources
+- No movie clips, TV clips, or copyrighted footage
+- No copyrighted music — only royalty-free tracks from assets/music/
+- No recognisable brand logos in any generated image
+- No political content, no health or medical claims
+- All engineering facts must be verifiable
+- Videos must be minimum 60 seconds for YouTube monetization
+- All images generated at 1080x1920 portrait for Shorts and TikTok
+
+---
+
+## Parameters Left Intentionally Blank
+
+These are placeholders in config.json that the owner will fill in after testing:
+- visuals.style_preset_id — test 5 Leonardo.AI styles, pick the most consistent, never change it
+- voice.voice_id / ELEVENLABS_VOICE_ID — pick after listening to voices in ElevenLabs Voice Library
+- thumbnail.frame_capture_at_seconds — set after watching first 5 assembled videos
+- posting.tiktok_post_times — adjust after 4 weeks of analytics data
+- video.music_volume_db — tune by ear after first assembly, -18 is the starting default
+
+Do not try to fill these in. Leave them as placeholder strings and add a comment in the config explaining why.
+
+---
+
+*Drop this file in the root of the videoforge/ folder.*
+*Claude Code reads CLAUDE.md automatically at the start of every session.*
+*Start by saying: "Read CLAUDE.md then build Phase 1."*
+
+---
+
+## Phase 11.v1 — Immediate priorities (week 1)
+
+Build this alongside getting the first real videos posted. Every feature here works from day one with zero historical data needed. Nothing in this phase depends on having analytics or a big topic bank.
+
+---
+
+### 11.v1.A — Device sync (build first — do before anything else)
+
+You use two devices. The database is the single most important file in the project — it has every job, every script path, every analytics record. Right now if you switch devices you lose all of it unless you manually copy it.
+
+**How it works:**
+Update database.py to read the database path from VIDEOFORGE_DB_PATH in .env, falling back to videoforge.db in the project root if not set. This lets the database live anywhere — a Dropbox folder, a Google Drive folder, a USB drive — while the code stays in Git.
+
+**Setup on each device:**
+1. Put videoforge.db in a shared Dropbox or Google Drive folder
+2. Add to .env on both machines: VIDEOFORGE_DB_PATH=C:/Users/you/Dropbox/VideoForge/videoforge.db
+3. Both machines now share the same database automatically
+
+**What syncs between devices:**
+- All jobs and their status
+- All topic bank entries
+- All analytics data
+- All scan history
+
+**What stays local per device:**
+- .env (API keys — never synced, filled in separately on each machine)
+- output/ folder (generated videos and images — large files, regeneratable)
+- logs/ folder (local only)
+- config.json (stays in Git, same on both)
+
+**Add to .env on both machines:**
+```
+VIDEOFORGE_DB_PATH=
+```
+Leave blank to use default local path. Fill in the Dropbox/Drive path to enable sync.
+
+**Future migration path:**
+When you add a server later, change VIDEOFORGE_DB_PATH to point to a hosted PostgreSQL or Supabase connection string. The rest of the code stays unchanged.
+
+**Pass condition:** Change VIDEOFORGE_DB_PATH to a different folder path, start app.py, confirm database loads from the new path and all jobs are visible.
+
+---
+
+### 11.v1.B — Priority Alert system (build second — highest immediate value)
+
+The single most valuable feature for a new channel. One viral trending video can generate more views in 48 hours than 10 regular videos combined. This works from day one with no historical data.
+
+**What it does:**
+Monitors Google Trends for engineering topics that spike above a threshold. When a spike is detected that matches your channel format, shows a prominent alert in the dashboard with a countdown. You can fast-track the video through the pipeline immediately.
+
+**New database table:**
+```sql
+CREATE TABLE IF NOT EXISTS trend_scans (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    scanned_at      TEXT DEFAULT (datetime('now')),
+    topics_found    INTEGER DEFAULT 0,
+    new_alerts      INTEGER DEFAULT 0,
+    buckets_scanned TEXT,
+    status          TEXT DEFAULT 'complete'
+);
+
+CREATE TABLE IF NOT EXISTS priority_alerts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic           TEXT NOT NULL,
+    bucket          TEXT,
+    spike_percent   REAL,
+    channel_fit     REAL,
+    hook_suggestion TEXT,
+    reframed_angle  TEXT,
+    window_hours    INTEGER DEFAULT 48,
+    triggered_at    TEXT DEFAULT (datetime('now')),
+    expires_at      TEXT,
+    status          TEXT DEFAULT 'active',
+    job_id          TEXT,
+    dismissed_at    TEXT
+);
+```
+
+**New module: modules/trend_monitor.py**
+
+Input: config dict
+Output: list of priority_alert records saved to database
+
+Process:
+1. Query Google Trends using pytrends for seed keywords per bucket from config
+2. For each result calculate spike percentage: (last 7 days avg) vs (previous 30 days avg)
+3. If spike exceeds priority_alert_threshold (default 150%) send topic to Claude for channel relevance check
+4. Claude returns: channel_fit score 1-10, reframed everyday angle, hook suggestion, yes/no on whether it fits the channel
+5. If channel_fit >= 7.0 create a priority_alert record with 48-hour expiry window
+6. Log the scan to trend_scans table regardless of results
+
+**Seed keywords in config.json — new research section:**
 ```json
-{
-  "channel": {
-    "name": "The Engineering Brief",
-    "handle": "HowThingsWorkEng",
-    "niche": "engineering",
-    "target_length_seconds": 70,
-    "platforms": ["tiktok", "youtube_shorts"]
-  },
-
-  "script": {
-    "model": "claude-sonnet-4-6",
-    "max_tokens": 1000,
-    "temperature": 0.7,
-    "word_count_target": 175,
-    "hook_style": "shocking_fact",
-    "images_to_generate": 8,
-    "language": "en",
-    "prompt_file": "prompts/script_prompt.txt"
-  },
-
-  "voice": {
-    "voice_id": "SET_IN_ENV",
-    "stability": 0.65,
-    "similarity_boost": 0.80,
-    "style_exaggeration": 0.20,
-    "chunk_by_section": true,
-    "output_format": "mp3_44100_128"
-  },
-
-  "visuals": {
-    "model": "leonardo-diffusion-xl",
-    "style_preset_id": "SET_AFTER_TESTING",
-    "negative_prompt": "text, watermarks, logos, faces, blurry, low quality, nsfw",
-    "width": 1080,
-    "height": 1920,
-    "guidance_scale": 7,
-    "num_inference_steps": 30,
-    "num_images": 1
-  },
-
-  "video": {
-    "width": 1080,
-    "height": 1920,
-    "fps": 30,
-    "codec": "h264",
-    "bitrate": "8000k",
-    "transition_duration": 0.3,
-    "music_volume_db": -18,
-    "voice_volume_db": 0
-  },
-
-  "captions": {
-    "whisper_model": "base",
-    "font_file": "assets/fonts/Arial-Bold.ttf",
-    "font_size": 56,
-    "color": "white",
-    "stroke_color": "black",
-    "stroke_width": 3,
-    "position_y_percent": 0.72,
-    "max_chars_per_line": 32,
-    "max_words_per_line": 4
-  },
-
-  "thumbnail": {
-    "frame_capture_at_seconds": 5,
-    "overlay_template": "assets/thumbnail_template/overlay.png",
-    "width": 1080,
-    "height": 1920
-  },
-
-  "metadata": {
-    "prompt_file": "prompts/metadata_prompt.txt",
-    "hashtag_count": 10,
-    "description_max_chars": 150,
-    "youtube_description_max_chars": 500,
-    "default_hashtags": [
-      "#engineering",
-      "#howthingswork",
-      "#science",
-      "#learnontiktok",
-      "#education"
-    ]
-  },
-
-  "posting": {
-    "tiktok_post_times": ["07:00", "13:00", "19:00"],
-    "youtube_post_times": ["08:00", "14:00", "20:00"],
-    "timezone": "Europe/Skopje",
-    "batch_size_per_week": 5,
-    "auto_post_after_review": false
-  },
-
-  "logging": {
-    "level": "DEBUG",
-    "max_log_size_mb": 50,
-    "keep_logs_days": 30
+"research": {
+  "priority_alert_threshold": 150,
+  "priority_alert_fit_minimum": 7.0,
+  "fast_track_window_hours": 48,
+  "safe_scans_per_hour": 5,
+  "safe_scans_per_day": 15,
+  "scan_on_startup": true,
+  "scan_on_startup_cooldown_hours": 2,
+  "notify_email": "",
+  "seed_keywords": {
+    "elec": ["electrical engineering", "battery", "circuit", "power grid", "electronics failure"],
+    "infra": ["bridge engineering", "building collapse", "construction failure", "dam", "skyscraper"],
+    "vehicle": ["car engineering", "aircraft failure", "electric vehicle", "train derailment", "engine"],
+    "flaw": ["engineering failure", "design flaw", "product recall", "structural failure", "engineering disaster"]
   }
 }
 ```
 
----
+**Channel relevance check — Claude prompt:**
+Send the trending topic plus channel context to Claude. Ask:
+- Does this fit "The Engineering Brief" — how everyday things work — score 1-10
+- Can it be explained in 70 seconds to a non-engineer — yes/no
+- Reframe this trending event as an everyday engineering concept — one sentence
+- Suggest a hook line for this reframed angle
 
-## 11. .env Template
+Example: "Baltimore bridge collapse" → reframed as "Why engineers build bridges to absorb impact — not resist it"
 
+**Scan history and rate limiting:**
+Track every scan in trend_scans table. Before each scan check:
+- How many scans in the last hour — block if >= safe_scans_per_hour
+- How many scans today — warn if >= safe_scans_per_day
+- When was the last scan — if scan_on_startup is true, only auto-scan if last scan was more than scan_on_startup_cooldown_hours ago
+
+**Dashboard changes — add to existing pages:**
+
+Overview page additions:
+- Priority Alert banner at the very top when active alerts exist — amber background, shows topic, spike percentage, channel fit score, and countdown timer to window close
+- "Fast-track this video" button on the banner — skips the queue and runs the pipeline immediately in foreground
+- "Dismiss" button — marks alert as dismissed, removes banner
+
+New Research section in sidebar navigation:
+- Trend Scanner page (/research/trends)
+
+**New page: Trend Scanner (/research/trends)**
+
+Scan status card:
 ```
-# Anthropic
-ANTHROPIC_API_KEY=
-
-# ElevenLabs
-ELEVENLABS_API_KEY=
-ELEVENLABS_VOICE_ID=
-
-# Leonardo.AI
-LEONARDO_API_KEY=
-
-# Pexels
-PEXELS_API_KEY=
-
-# TikTok (after developer approval)
-TIKTOK_CLIENT_KEY=
-TIKTOK_CLIENT_SECRET=
-TIKTOK_ACCESS_TOKEN=
-
-# YouTube (file path to downloaded JSON)
-YOUTUBE_CLIENT_SECRETS_FILE=client_secrets.json
-
-# Flask
-FLASK_SECRET_KEY=change_this_to_random_string
-FLASK_PORT=5000
+Last scan: Today 09:14 — 2 alerts found
+Scans today: 2 of 15 safe limit
+Next auto-scan: on startup if > 2 hours since last
+[ Scan now ]
 ```
 
-**Rules for .env:**
-- Never log any value from .env
-- Never print any value from .env
-- Never commit .env to git
-- Load with `load_dotenv()` at the top of every file that needs it
-- Access with `os.getenv('KEY_NAME')` — never hardcode
+Active alerts table — shows all active (non-expired, non-dismissed) alerts:
+- Topic (reframed angle)
+- Original trending event
+- Spike percentage
+- Channel fit score
+- Time remaining in window
+- Fast-track button
+- Dismiss button
+
+Scan history table — one row per scan:
+- Date and time
+- Topics found
+- New alerts created
+- Clicking a row expands to show which topics were found
+
+**Fast-track pipeline:**
+When fast-track is triggered the pipeline runs differently from the normal batch:
+- Script generated immediately and shown in browser for review
+- Owner reviews script, edits hook if needed, clicks Approve Script
+- Voice + Images run in parallel after script approval
+- Assembly starts when both complete
+- Captions + metadata run immediately
+- Simplified review gate — 10-second preview + title, one click approve
+- Upload immediately at next optimal time within 6 hours
+
+**Email notification:**
+When a Priority Alert fires and notify_email is set in config, send a plain text email via Python's built-in smtplib. No external service needed. Email contains the topic, spike percentage, channel fit score, and dashboard URL.
+
+**CLI commands:**
+```bash
+# Run a trend scan manually
+python main.py scan-trends
+
+# Show active priority alerts
+python main.py list-alerts
+
+# Fast-track a specific alert to the pipeline
+python main.py fast-track --alert-id 1
+```
+
+**Pass conditions for 11.v1.B:**
+- python main.py scan-trends runs without error, logs scan to trend_scans table
+- If a spike is detected above threshold, priority_alerts record is created with correct expiry
+- /research/trends page loads showing scan history and any active alerts
+- Scan now button in dashboard triggers a scan and updates the page
+- Rate limit correctly blocks scans when hourly limit is reached
+- Fast-track button on an alert creates a job and starts the pipeline immediately
 
 ---
 
-## 12. Build Phases — Checklist
+### 11.v1.C — Similarity detection (build third — cheap and prevents waste)
 
-Build in this exact order. Do not start the next phase until the current one passes its test.
+One Claude API call per new topic. Prevents you from spending pipeline credits making a video you've essentially already made with different wording.
 
-### Phase 1 — Foundation (Days 1–2)
-- [ ] Create all directories from File Structure section
-- [ ] Create requirements.txt with all dependencies
-- [ ] Create config.json with all parameters from Section 10
-- [ ] Create .env with all keys from Section 11
-- [ ] Create database.py with schema from Section 9
-- [ ] Create utils/logger.py with setup_logger from Section 6
-- [ ] Create tests/test_connections.py that pings all 4 APIs
-- [ ] **PASS CONDITION:** `python tests/test_connections.py` → all APIs return OK
+**How it works:**
+Every time a topic is added to the queue — whether manually, from fast-track, or from the bulk adder — send it to Claude along with the last 50 topics from the jobs table and topic_bank table. Claude returns a similarity score and the most similar existing topic title.
 
-### Phase 2 — Script Engine (Days 3–4)
-- [ ] Create modules/script_engine.py
-- [ ] Load prompt from prompts/script_prompt.txt
-- [ ] Call Claude API with retry logic
-- [ ] Parse response into structured JSON
-- [ ] Save to output/scripts/NNN.json
-- [ ] Update job status in DB
-- [ ] Full logging throughout
-- [ ] **PASS CONDITION:** `python main.py generate-script "Why phone chargers get warm" --bucket elec` → creates output/scripts/001.json
+If similarity is above 70% show a warning before adding:
+```
+Similar topic detected
+"Why USB chargers heat up" is 84% similar to your existing video
+"Why phone chargers get warm" (posted 3 weeks ago, 42K views)
 
-### Phase 3 — Voice Engine (Days 5–6)
-- [ ] Create modules/voice_engine.py
-- [ ] Read script JSON
-- [ ] Split into 3 chunks if chunk_by_section=true
-- [ ] Call ElevenLabs for each chunk with retry
-- [ ] Concatenate MP3s with pydub
-- [ ] Save to output/audio/NNN.mp3
-- [ ] Record duration_seconds in DB
-- [ ] **PASS CONDITION:** `python main.py generate-voice 001` → creates output/audio/001.mp3, plays correctly
+[ Add anyway ]  [ Cancel ]  [ Use different angle ]
+```
 
-### Phase 4 — Image Engine (Days 7–8)
-- [ ] Create modules/image_engine.py
-- [ ] Read visual_brief from script JSON
-- [ ] Append style_preset_id and negative_prompt to each prompt
-- [ ] Call Leonardo.AI for each with polling until done
-- [ ] Download all images to output/images/NNN/
-- [ ] Verify all 8 images exist before marking done
-- [ ] **PASS CONDITION:** `python main.py generate-images 001` → output/images/001/ contains 8 images
+"Use different angle" sends both topics to Claude and asks it to suggest a fresh angle that's distinct from the existing video.
 
-### Phase 5 — Assembly Engine (Days 9–12)
-- [ ] Create modules/assembly_engine.py
-- [ ] Load audio + get duration
-- [ ] Calculate image_duration = audio_duration / num_images
-- [ ] Create slideshow with crossfade transitions
-- [ ] Mix background music at configured volume
-- [ ] Export 1080×1920 MP4 at configured bitrate
-- [ ] **PASS CONDITION:** `python main.py assemble 001` → creates output/videos/001_raw.mp4, plays correctly
+**Where it runs:**
+- When adding a job from the New Job form
+- When fast-tracking a Priority Alert
+- When adding topics from the bulk adder
+- Does NOT run in the background — only on explicit add actions
 
-### Phase 6 — Caption Engine (Day 13)
-- [ ] Create modules/caption_engine.py
-- [ ] Run Whisper on MP3 → word-level timestamps
-- [ ] Group into caption blocks at max_chars_per_line
-- [ ] Burn captions into video with configured style
-- [ ] Export output/videos/NNN_captioned.mp4
-- [ ] **PASS CONDITION:** `python main.py add-captions 001` → captioned video renders correctly, captions readable
+**Add to database.py:**
+```sql
+ALTER TABLE jobs ADD COLUMN similarity_checked INTEGER DEFAULT 0;
+ALTER TABLE jobs ADD COLUMN similar_to_job TEXT;
+ALTER TABLE jobs ADD COLUMN similarity_score REAL;
+```
 
-### Phase 7 — Metadata + Thumbnail (Day 14)
-- [ ] Create modules/metadata_engine.py
-- [ ] Create modules/thumbnail_engine.py
-- [ ] Metadata: call Claude API with metadata_prompt.txt → parse → save JSON
-- [ ] Thumbnail: capture frame at configured second → apply overlay → save JPG
-- [ ] **PASS CONDITION:** Both files exist in output/metadata/ and output/thumbnails/
-
-### Phase 8 — Upload Engine (Days 15–17)
-- [ ] Create modules/upload_engine.py
-- [ ] Implement YouTube OAuth flow (first-run browser auth)
-- [ ] Implement YouTube resumable upload
-- [ ] Implement TikTok OAuth + upload
-- [ ] Store published URLs in DB
-- [ ] **PASS CONDITION:** `python main.py upload 001` → video live on both platforms, URLs stored in DB
-
-### Phase 9 — Web Dashboard (Days 18–22)
-- [ ] Create app.py with Flask
-- [ ] Create templates/dashboard.html — job queue with status badges
-- [ ] Create templates/job_detail.html — video preview + approve button
-- [ ] Create templates/config_editor.html — editable form for config.json
-- [ ] Create templates/stats.html — basic metrics
-- [ ] Implement review gate — status stuck at 'review' until Approve clicked
-- [ ] **PASS CONDITION:** `python app.py` → localhost:5000 shows dashboard, full pipeline triggerable from browser
-
-### Phase 10 — Automation (Days 23–28)
-- [ ] Create scheduler.py with APScheduler
-- [ ] Batch job: every Sunday 22:00 CET — process N topics from queue
-- [ ] Create webhook.py — Make.com trigger endpoint
-- [ ] Create modules/analytics_engine.py — pull stats from both APIs
-- [ ] Analytics scheduled: every Monday 06:00 — pull previous week's stats
-- [ ] **PASS CONDITION:** Topics added to queue automatically trigger pipeline without manual intervention
+**Pass condition:** Adding "Why USB chargers heat up" when "Why phone chargers get warm" exists in jobs table triggers the similarity warning.
 
 ---
 
-## 13. CLI Commands Reference
+### 11.v1.D — Archive and topic bank foundation (build fourth)
+
+Simple database changes that lay the foundation for the full topic bank in v2 without building the whole scoring engine yet.
+
+**Database changes:**
+```sql
+-- Add archive flag to topic_bank
+ALTER TABLE topic_bank ADD COLUMN archived INTEGER DEFAULT 0;
+ALTER TABLE topic_bank ADD COLUMN archived_at TEXT;
+ALTER TABLE topic_bank ADD COLUMN archive_reason TEXT;
+
+-- Add manual topics (not yet scored) support
+-- status can now be: pending / scored / queued / made / archived
+```
+
+**Dashboard changes:**
+- Add Archive button to each topic row in Research pages
+- Add "Show archived" toggle that unhides archived topics
+- Archived topics shown with strikethrough and muted styling
+
+**New Research page foundation: /research/topics**
+Simple topic bank table showing all topics — scored and unscored. Columns: topic, bucket, score (or "not scored"), status, date added. Buttons: Add to queue, Archive, Delete. This page will be expanded significantly in v2.
+
+**CLI commands:**
+```bash
+# Add a topic to the bank without scoring (for manual entry)
+python main.py add-topic "Why skyscrapers sway in the wind" --bucket infra
+
+# Archive a topic
+python main.py archive-topic --id 5 --reason "Already covered similar angle"
+
+# Export topic bank to CSV
+python main.py export-topics --output topics_export.csv
+```
+
+**Pass condition:** Adding a topic, archiving it, and confirming it disappears from the main view but appears with Show Archived toggle.
+
+---
+
+### Phase 11.v1 build order
+
+Build in this exact sequence — each one is independent but builds on the previous:
+
+1. 11.v1.A — Device sync (VIDEOFORGE_DB_PATH in .env and database.py) — 30 minutes
+2. 11.v1.B — Trend monitor module + priority alerts table + scan history table
+3. 11.v1.B — Trend Scanner dashboard page + alert banner on Overview
+4. 11.v1.B — Fast-track pipeline flow
+5. 11.v1.B — Email notification
+6. 11.v1.C — Similarity detection on topic add
+7. 11.v1.D — Archive flag + topic bank foundation page
+8. Update requirements.txt — add pytrends
+9. Update config.json — add research section with all parameters
+10. Run all pass conditions
+
+---
+
+## Phase 11.v2 — 2–4 week priorities
+
+Build after v1 is stable and you have at least 10 real videos posted. These features need real data to be useful.
+
+---
+
+### 11.v2.A — Full topic scoring engine
+
+The research_engine.py module with all four data sources — Google Trends + YouTube search + Claude scoring + own channel analytics. Full scored report with 0–10 score, hook suggestion, three alt angles, competition level, and channel fit confidence badge.
+
+Exactly as specced in the original Phase 11 spec above. Build this once you have real analytics data coming in from posted videos so the channel performance component of the score is meaningful.
+
+---
+
+### 11.v2.B — Research dashboard page (full version)
+
+Expand /research/topics into the full Research page with:
+- Single topic scorer — type a topic, get full scored report in 30 seconds
+- Bulk scorer — paste 20 topics, score them all, get ranked table
+- "Add top 5 to queue" button
+- Re-score button on each topic
+- Filter by bucket, status, score range
+- Sort by score, date, status
+
+---
+
+### 11.v2.C — Comment mining
+
+Pull comments from your YouTube videos weekly using the YouTube Data API. Send batches to Claude to identify questions and topic suggestions from your own audience. Add flagged suggestions to topic bank with status "audience-requested". These videos almost always outperform because viewers literally asked for them.
+
+---
+
+### 11.v2.D — Auto-fill weekly calendar
+
+Every Sunday morning at 09:00 — before the 22:00 batch run — the system automatically selects the top 5 scored topics from the topic bank that haven't been made yet, balancing across buckets. Shows them in the dashboard for your review. You can swap any you don't like. At 22:00 the batch runs on whatever is in the queue.
+
+---
+
+### 11.v2.E — Performance feedback loop
+
+After a video gets its first 48 hours of analytics, the system compares how it performed against its pre-production score. Did high-scored topics actually perform better? Shows this correlation in the Analytics page as "Score accuracy" so you can see if the scoring is working and manually adjust weights if needed.
+
+---
+
+## Phase 12 — Multi-Channel Support
+
+Build after Phase 11.v2 is working and you are ready to launch a second channel (month 4–5). Full architectural change — channels/ folder structure, channel_id on all tables, dashboard channel switcher, two-voice dialogue format.
+
+### Planned channels
+
+| Channel | Format | Content | Launch |
+|---|---|---|---|
+| The Engineering Brief | Single narrator | How everyday things work | Live now |
+| Two Voice Science | Alex + Sam dialogue | Same topics, more entertaining | Month 4–5 |
+| Money Mechanics | Single narrator | How financial systems work | Month 8–9 |
+
+### 12.A — Database migration
+
+```sql
+CREATE TABLE IF NOT EXISTS channels (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    handle_yt   TEXT,
+    handle_tt   TEXT,
+    format      TEXT DEFAULT 'single_narrator',
+    active      INTEGER DEFAULT 1,
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
+ALTER TABLE jobs        ADD COLUMN channel_id TEXT DEFAULT 'engineering_brief';
+ALTER TABLE analytics   ADD COLUMN channel_id TEXT DEFAULT 'engineering_brief';
+ALTER TABLE topic_bank  ADD COLUMN channel_id TEXT DEFAULT 'engineering_brief';
+
+INSERT OR IGNORE INTO channels (id, name, handle_yt, handle_tt, format)
+VALUES ('engineering_brief', 'The Engineering Brief', '@HowThingsWorkEng', '@HowThingsWorkEng', 'single_narrator');
+```
+
+### 12.B — File structure migration
+
+Move all channel-specific files into channels/ directory:
+```
+channels/
+  engineering_brief/
+    config.json
+    prompts/
+      script_prompt.txt
+      metadata_prompt.txt
+  two_voice_science/
+    config.json
+    prompts/
+      script_prompt.txt   ← dialogue format
+      metadata_prompt.txt
+```
+
+Root config.json becomes global only — logging, Flask port, scheduler timing.
+
+### 12.C — Pipeline changes
+
+Every module receives channel_id and loads config and prompts from channels/{channel_id}/. No logic changes — only file path changes.
+
+### 12.D — Two-voice dialogue format
+
+Script prompt for dialogue channels returns dialogue array instead of single narration:
+```json
+{
+  "dialogue": [
+    {"character": "ALEX", "line": "Wait — phone chargers get warm?"},
+    {"character": "SAM", "line": "Every single one. And most people have no idea why."}
+  ],
+  "visual_brief": [...],
+  "full_script": "combined text for captions"
+}
+```
+
+Voice engine loops through dialogue array and calls ElevenLabs with voice_id_alex or voice_id_sam per line. Two voice IDs in channel config.
+
+### 12.E — Dashboard channel switcher
+
+Dropdown in navbar. Switching channel filters all pages — job queue, analytics, config editor, prompt editor, research — to that channel's data. Adding a job defaults to active channel.
+
+### 12.F — Cross-channel trend routing
+
+When Phase 12 is live, the trend monitor evaluates each trending topic against all active channels simultaneously and routes it to the channel with the highest fit score. "Federal Reserve rate decision" → routes to Money Mechanics. "EV battery failure" → routes to Engineering Brief. Shown in the Priority Alert with which channel it was routed to.
+
+### 12.G — new-channel CLI command
 
 ```bash
-# Test all API connections (run this first every session)
-python main.py test-connections
-
-# Full pipeline for one topic (runs all phases in sequence)
-python main.py pipeline "Why phone chargers get warm" --bucket elec
-
-# Run individual phases (for debugging or re-running failed steps)
-python main.py generate-script "topic" --bucket elec --hook shocking_fact
-python main.py generate-voice 001
-python main.py generate-images 001
-python main.py assemble 001
-python main.py add-captions 001
-python main.py generate-metadata 001
-python main.py generate-thumbnail 001
-python main.py upload 001
-
-# Batch process queue
-python main.py batch --count 5
-
-# Show job status
-python main.py status 001
-
-# Show all jobs
-python main.py list-jobs
-
-# Start web dashboard
-python app.py
+python main.py new-channel "two_voice_science" --name "Two Voice Science" --format dialogue
 ```
 
----
+Creates channels/two_voice_science/ by copying engineering_brief as template. Registers in channels table. Owner edits prompts and voice IDs.
 
-## 14. Module Connection Map
-
-```
-topic_string + bucket + hook_style
-    └─→ script_engine.py
-            ├─→ output/scripts/NNN.json
-            │       ├─→ voice_engine.py → output/audio/NNN.mp3
-            │       ├─→ image_engine.py → output/images/NNN/img_01..08.png
-            │       └─→ metadata_engine.py → output/metadata/NNN.json
-            │
-            └─→ [voice + images + music] → assembly_engine.py
-                    └─→ output/videos/NNN_raw.mp4
-                            └─→ caption_engine.py
-                                    └─→ output/videos/NNN_captioned.mp4
-                                            ├─→ thumbnail_engine.py → output/thumbnails/NNN.jpg
-                                            └─→ [REVIEW GATE]
-                                                    └─→ upload_engine.py
-                                                            ├─→ TikTok (URL stored in DB)
-                                                            └─→ YouTube (URL stored in DB)
-                                                                    └─→ analytics_engine.py
-                                                                            └─→ analytics table in DB
-
-config.json ─────────────────────────→ every module (loaded at startup)
-.env ────────────────────────────────→ every module (loaded at startup, never logged)
-```
+### Phase 12 build order
+1. Database migration with channel_id columns
+2. File structure migration — move engineering_brief into channels/
+3. Update all modules to accept channel_id
+4. Dashboard channel switcher
+5. Two-voice voice engine update
+6. Cross-channel trend routing
+7. new-channel CLI command
+8. Full pass condition test
 
 ---
 
-## 15. Parameters Left to Set Later
-
-These intentionally have placeholder values in config.json and .env:
-
-| Parameter | Where | Why to wait |
-|---|---|---|
-| `style_preset_id` | config.json visuals | Test 5 Leonardo.AI styles manually on real scripts first. Pick the most consistent one. Never change it after locking. |
-| `ELEVENLABS_VOICE_ID` | .env | Listen to 5–10 voices in ElevenLabs Voice Library. Pick the most authoritative-sounding narrator. Copy the Voice ID from the URL. |
-| `frame_capture_at_seconds` | config.json thumbnail | Watch first 5 assembled videos. Find which second has the most visually striking frame. |
-| `tiktok_post_times` | config.json posting | After 4 weeks check TikTok analytics for when your audience is most active. Adjust times accordingly. |
-| `music_volume_db` | config.json video | Depends on the track. Start at -18. After assembling first video, listen and adjust ±3dB. |
-| `transition_duration` | config.json video | Start at 0.3. If video feels rushed increase to 0.4. If slow decrease to 0.25. |
-| `TIKTOK_CLIENT_KEY` | .env | After TikTok developer application is approved (7–10 days). |
-| `TIKTOK_CLIENT_SECRET` | .env | Same as above. |
-
----
-
-## 16. Security Rules
-
-1. Never log API keys, tokens, or secrets — not even the first 4 characters
-2. Never print API keys to console
-3. Always load secrets from .env — never hardcode in any file
-4. Add .env to .gitignore before the first commit
-5. Add logs/ and output/ to .gitignore
-6. client_secrets.json must also be in .gitignore
-7. If a key is accidentally logged, rotate it immediately
-
----
-
-## 17. Content Rules
-
-These rules protect monetization and must be enforced in the script prompt:
-
-1. All content must be original — no copying from other sources
-2. No movie clips, TV clips, or copyrighted footage
-3. No copyrighted music — only royalty-free tracks from assets/music/
-4. No recognisable brand logos in any generated image
-5. No political content
-6. No health/medical claims
-7. All engineering facts must be verifiable — the owner reviews for accuracy
-8. Videos must be at minimum 60 seconds to qualify for YouTube monetization
-9. All images generated at 1080×1920 (portrait) for Shorts/TikTok format
-
----
-
-## 18. Accounts and Credentials Summary
-
-| Service | Account | Purpose |
-|---|---|---|
-| Google / YouTube | trpeski.jordan@gmail.com | YouTube channel owner, API auth |
-| YouTube channel | The Engineering Brief @HowThingsWorkEng | Content channel |
-| Google Cloud project | VideoForge | API project |
-| TikTok | @HowThingsWorkEng | Content + growth |
-| Anthropic | TBD | Script + metadata generation |
-| ElevenLabs | TBD | Voiceover |
-| Leonardo.AI | TBD | Image generation |
-| Pexels | TBD | B-roll footage |
-| Make.com | TBD | Automation webhooks |
-
----
-
-*VideoForge CLAUDE.md v1.0 — Last updated April 2026*
-*This document must be kept up to date as the project evolves.*
-*When Claude Code asks "what should I do?", the answer is in this file.*
-
----
-
-## 19. Dashboard — Full Specification (app.py + templates/)
-
-The dashboard runs at localhost:5000 via Flask. It is the only interface the owner uses after initial setup. Every action — adding jobs, editing config, reviewing videos, reading logs — happens here. No terminal needed for day-to-day operation.
-
-### Navigation structure
-
-8 pages, always visible in the left sidebar:
-
-```
-Main
-  ├── Overview          /                    Live pipeline status + review gate
-  ├── Job queue         /jobs                All jobs with status + filters
-  └── New job           /jobs/new            Add topic to queue
-
-Tools
-  ├── Config editor     /config              Edit all config.json parameters in UI
-  ├── Prompt editor     /prompts             Edit script_prompt.txt + metadata_prompt.txt
-  └── Log viewer        /logs                Live log tail with filters
-
-Insights
-  ├── Analytics         /analytics           Views, subs, revenue, top videos by bucket
-  └── API health        /health              Status + latency of all 6 APIs + re-auth
-```
-
----
-
-### Page 1 — Overview (/)
-
-**Purpose:** First thing you see. Shows what's happening right now.
-
-**Components:**
-
-Stat strip (4 cards):
-- Total videos made (count from jobs DB)
-- Posted this week (jobs with status=posted AND created_at >= Monday)
-- In queue (jobs with status=queued)
-- Awaiting review (jobs with status=review) — shown in amber if > 0
-
-Pipeline status card:
-- Shows live stage progress for the currently-running job
-- Each stage row: colored dot (done=green / running=blue / pending=gray / failed=red) + stage name + status message + elapsed time
-- Auto-refreshes every 5 seconds via JS fetch to /api/pipeline-status
-
-Review gate card (only shown when a job is at status=review):
-- Shows topic, word count, audio duration
-- Two buttons: "Approve + schedule" → sets status=uploading and triggers upload_engine
-- "Reject — redo" → sets status=queued and clears all output files for that job so it reruns from scratch
-
----
-
-### Page 2 — Job queue (/jobs)
-
-**Purpose:** Full list of all jobs, filterable by status.
-
-**Components:**
-
-Filter pills: All / Queued / Running / Review / Posted / Failed
-
-Job table rows (one per job):
-- Job ID (monospace, 3 digits)
-- Topic (truncated if too long)
-- Status badge (color-coded)
-- Created date
-- Clicking a row → goes to job detail page /jobs/NNN
-
-Job detail page (/jobs/NNN):
-- Topic, bucket, hook style
-- Stage-by-stage timeline with timestamps and durations
-- Script preview — shows full generated script text
-- Visual brief — shows all 8 generated image prompts
-- Generated metadata — shows title, description, hashtags
-- Video preview — HTML5 video player if captioned video exists
-- Thumbnail preview
-- Published URLs if posted
-- Raw log output filtered to this job ID
-- If status=failed: shows error_module + error_message prominently with a "Retry from this stage" button
-- If status=review: shows Approve + Reject buttons (same as Overview)
-
----
-
-### Page 3 — New job (/jobs/new)
-
-**Purpose:** Add a topic to the pipeline without using the terminal.
-
-**Fields:**
-- Topic (text input, required)
-- Bucket (dropdown: Electrical / Infrastructure / Vehicles / The Flaw)
-- Hook style (dropdown: Shocking fact / Wrong assumption / Nobody talks about this)
-- Run mode (dropdown):
-  - "Add to queue" — adds with status=queued, runs in next batch
-  - "Run pipeline now" — immediately triggers full pipeline
-  - "Script only" — runs script_engine only, pauses at status=scripted for review before continuing
-
-Submit button: "Add job"
-
-Bulk add section (below the form):
-- Textarea — paste multiple topics, one per line
-- Same bucket and hook style applied to all
-- "Add N jobs" button
-
----
-
-### Page 4 — Config editor (/config)
-
-**Purpose:** Edit all config.json parameters without touching files. No coding required.
-
-**Layout:** Grouped sections matching config.json structure:
-
-Groups shown:
-- Script (Claude API) — model, temperature, word_count_target, images_to_generate
-- Voice (ElevenLabs) — stability, similarity_boost, style_exaggeration, chunk_by_section
-- Visuals (Leonardo.AI) — style_preset_id, guidance_scale, num_inference_steps, negative_prompt
-- Video assembly — transition_duration, music_volume_db, fps, bitrate
-- Captions — font_size, stroke_width, position_y_percent, whisper_model, max_chars_per_line
-- Thumbnail — frame_capture_at_seconds
-- Posting — batch_size_per_week, timezone, hashtag_count, tiktok_post_times, youtube_post_times
-
-Each parameter row shows:
-- Parameter name (monospace)
-- Input field (pre-filled with current value from config.json)
-- Short note explaining what it does and safe range
-
-Bottom buttons:
-- "Save config" — writes changes back to config.json
-- "Reset to defaults" — restores original values with confirmation prompt
-
-**Important:** Config changes take effect on the NEXT job run. Currently-running jobs use the config that was loaded when they started.
-
----
-
-### Page 5 — Prompt editor (/prompts)
-
-**Purpose:** Edit the master script prompt and metadata prompt directly in the browser. This is the most powerful page — changing the script prompt changes the tone, structure, and quality of every future video.
-
-**Components:**
-
-Script prompt editor:
-- Full textarea showing current contents of prompts/script_prompt.txt
-- Syntax highlighting not required — plain monospace textarea is fine
-- "Save prompt" button — overwrites the file
-- "Test with last topic" button — runs script_engine on the most recent job's topic using the current (unsaved) prompt text and shows the result in a preview panel below
-- "Reset to default" button with confirmation
-
-Metadata prompt editor:
-- Full textarea showing current contents of prompts/metadata_prompt.txt
-- "Save prompt" button
-- "Test with last topic" button — generates metadata preview
-
-Prompt variable reference (shown below editors):
-- Table of all available variables: {topic}, {bucket}, {hook_style}, {word_count_target}, {hashtag_count}, etc.
-- Shows current value of each variable so you can see what will be injected
-
-**Why this page matters:** If videos feel robotic, the fix is in the script prompt. If titles aren't getting clicks, fix the metadata prompt. The owner can iterate on both without touching any Python code.
-
----
-
-### Page 6 — Log viewer (/logs)
-
-**Purpose:** Read any log file and debug failures without opening the terminal.
-
-**Components:**
-
-Filter controls:
-- Level filter pills: All / INFO / WARNING / ERROR / DEBUG
-- Module dropdown: All modules / script_engine / voice_engine / image_engine / assembly_engine / caption_engine / upload_engine / errors only
-- Job ID filter: text input — filter to show only lines containing [JOB NNN]
-- Auto-refresh toggle: ON/OFF — when ON, fetches new log lines every 3 seconds
-
-Log display:
-- Monospace font, small text
-- Color-coded by level: INFO=blue / WARNING=amber / ERROR=red / DEBUG=gray
-- Newest lines at top (reverse chronological)
-- Shows last 200 lines by default
-- "Load more" button to show older lines
-
-Quick access buttons (top right):
-- "Open errors.log" — jumps to errors-only view
-- "Clear logs" — archives current logs to logs/archive/ with timestamp and starts fresh (with confirmation)
-
-**What this replaces:** Opening Terminal → navigating to folder → running tail -f logs/errors.log. The owner sees the same information in the browser.
-
----
-
-### Page 7 — Analytics (/analytics)
-
-**Purpose:** Track channel performance and understand which content works best.
-
-**Data sources:** YouTube Analytics API + TikTok API, pulled every Monday at 06:00 and stored in analytics table.
-
-**Components:**
-
-Stat strip (4 cards):
-- Total views (all time, both platforms combined)
-- Total subscribers / followers
-- Estimated revenue this month (YouTube AdSense estimate based on avg CPM)
-- Average video completion rate
-
-Top performing videos table:
-- Rank, topic, platform (YT+TT badge), total views, completion rate
-- Sorted by views descending
-- Shows last 30 days
-
-Performance by content bucket:
-- Horizontal bar chart — avg views per video for each bucket
-- Updates automatically as more data comes in
-- Use this to decide which bucket to post more of
-
-Platform comparison:
-- YouTube vs TikTok: avg views, completion rate, subscriber gain per video
-- Helps decide where to focus promotion effort
-
-Post timing heatmap:
-- Shows which days/times got highest views
-- Useful for adjusting tiktok_post_times and youtube_post_times in config
-
-"Refresh analytics now" button — manually triggers analytics_engine.py pull outside the scheduled Monday run.
-
----
-
-### Page 8 — API health (/health)
-
-**Purpose:** Check all 6 API connections before starting a batch session. Catch token expiry, credit exhaustion, and rate limits before they crash a pipeline run.
-
-**Components:**
-
-API status table — one row per service:
-- Service name
-- Status badge: OK (green) / Token expired (red) / Rate limited (amber) / Unreachable (red)
-- Details: plan tier, credits/quota remaining, token expiry date
-- Response latency (ms)
-- "Test" button — pings the API and updates the row
-
-Services shown:
-- Claude API — shows model availability
-- ElevenLabs — shows plan, characters remaining this month
-- Leonardo.AI — shows credits remaining today (resets daily)
-- Pexels — always free, just confirms connectivity
-- YouTube API — shows OAuth token validity + daily quota remaining (10,000 units/day)
-- TikTok API — shows access token expiry (tokens expire frequently — this is the most common failure)
-
-"Run full connection test" button:
-- Executes tests/test_connections.py
-- Shows pass/fail for each API
-- Displays the same output you'd see in terminal, in the browser
-
-Re-auth flow for TikTok:
-- When TikTok token is expired, a "Re-auth" button appears
-- Clicking it opens the TikTok OAuth flow in a new tab
-- After completing auth, the new token is saved to .env automatically
-
-**Rule:** Always check this page before starting a Sunday batch session. A failed TikTok token discovered mid-batch wastes hours.
-
----
-
-### Flask routes summary
-
-```python
-# Main pages
-GET  /                        → overview
-GET  /jobs                    → job queue
-GET  /jobs/new                → new job form
-POST /jobs/new                → create job(s)
-GET  /jobs/<job_id>           → job detail
-POST /jobs/<job_id>/approve   → approve for upload
-POST /jobs/<job_id>/reject    → reject and requeue
-GET  /config                  → config editor
-POST /config                  → save config.json
-GET  /prompts                 → prompt editor
-POST /prompts/script          → save script_prompt.txt
-POST /prompts/metadata        → save metadata_prompt.txt
-GET  /logs                    → log viewer
-GET  /analytics               → analytics page
-GET  /health                  → API health page
-POST /health/reauth/tiktok    → trigger TikTok re-auth
-
-# API endpoints (called by JS for live updates)
-GET  /api/pipeline-status     → current running job stage + progress (JSON)
-GET  /api/logs                → last N log lines with filters (JSON)
-GET  /api/analytics           → analytics data (JSON)
-GET  /api/health              → all API statuses (JSON)
-POST /api/test-prompt         → test prompt with last topic, return preview (JSON)
-POST /api/refresh-analytics   → trigger analytics pull now
-
-# Webhook (for Make.com automation)
-POST /webhook/new-topic       → add topic from Google Sheets trigger
-```
-
----
-
-### Dashboard security note
-
-The dashboard has no login — it only runs on localhost:5000, never exposed to the internet. If you ever want to access it remotely (from another device on the same network), Flask can be configured to bind to 0.0.0.0, but add a simple password via Flask-Login before doing so.
-
+## Future phases (month 6+)
+
+**Phase 13 — Advanced intelligence:**
+- Negative space analysis — find topics with high search volume and weak/old competition
+- Search autocomplete harvesting — YouTube and Google suggest what people are typing
+- Seasonal calendar auto-population — pre-schedule topics for predictable annual spikes
+- Reddit monitoring — r/engineering, r/mildlyinteresting as leading indicators
+- Competitor gap analysis — find topics competitors covered that you haven't
+
+**Phase 14 — Server migration:**
+- Move dashboard from localhost to a VPS (Hetzner/DigitalOcean $5/month)
+- HTTPS with Let's Encrypt
+- Access from any device via browser — no local install needed
+- Scheduler runs 24/7 without your computer being on
+- Migrate database from Dropbox sync to hosted PostgreSQL
+
+**Phase 15 — Scale:**
+- Self-improving score weights based on your own channel performance data
+- Series detection — group related topics into multi-part series
+- Cross-platform signal correlation — Reddit spike predicts YouTube trend 48 hours later
+- Automated A/B testing of hook styles

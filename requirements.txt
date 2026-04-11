@@ -39,3 +39,6 @@ anthropic>=0.25.0
 numpy>=1.24.0
 imageio>=2.31.0
 imageio-ffmpeg>=0.4.9
+
+# Phase 11.v1.B — Trend monitoring
+pytrends>=4.9.0

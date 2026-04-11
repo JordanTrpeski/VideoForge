@@ -2,6 +2,49 @@
 {% block title %}Overview — VideoForge{% endblock %}
 
 {% block content %}
+
+<!-- Priority Alert banner -->
+{% if active_alerts %}
+{% for a in active_alerts %}
+<div class="rounded-xl mb-5 p-4 flex flex-wrap gap-4 items-center justify-between"
+     style="background:#431407;border:1px solid #92400e">
+    <div>
+        <div class="flex items-center gap-2 mb-1">
+            <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+            </svg>
+            <span class="text-amber-300 font-semibold text-sm">Priority Alert — trending topic</span>
+            <span class="badge" style="background:#92400e;color:#fde68a">{{ "%.0f"|format(a.spike_percent) }}% spike</span>
+            <span class="badge" style="background:#1e3a5f;color:#93c5fd">{{ a.channel_fit }}/10 fit</span>
+        </div>
+        <div class="text-slate-100 font-medium">{{ a.reframed_angle or a.topic }}</div>
+        {% if a.hook_suggestion %}
+        <div class="text-xs mt-0.5 text-amber-200 opacity-80">Hook: {{ a.hook_suggestion }}</div>
+        {% endif %}
+        {% if a.expires_at %}
+        <div class="text-xs mt-0.5 text-amber-400">
+            Window closes: {{ a.expires_at[:16] }}
+        </div>
+        {% endif %}
+    </div>
+    <div class="flex gap-2">
+        <form method="POST" action="/research/alerts/{{ a.id }}/fast-track">
+            <button type="submit" class="btn btn-warning">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+                Fast-track this video
+            </button>
+        </form>
+        <form method="POST" action="/research/alerts/{{ a.id }}/dismiss">
+            <button type="submit" class="btn btn-ghost">Dismiss</button>
+        </form>
+    </div>
+</div>
+{% endfor %}
+{% endif %}
+
 <h1 class="text-lg font-semibold text-white mb-5">Overview</h1>
 
 <!-- Stat strip -->

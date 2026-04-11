@@ -4,8 +4,14 @@ database.py
 SQLite schema definition and all database operations for VideoForge.
 
 Input:  Job parameters, status updates, analytics data
-Output: Persistent SQLite database at videoforge.db
+Output: Persistent SQLite database — path set by VIDEOFORGE_DB_PATH in .env,
+        falling back to videoforge.db in the project root.
 Logs:   logs/database.log
+
+Device sync:
+    Set VIDEOFORGE_DB_PATH to a Dropbox or Google Drive path on each machine.
+    Both machines share the same database automatically.
+    Leave blank to use the default local path.
 
 Dependencies:
     - sqlite3 (stdlib)
@@ -13,31 +19,66 @@ Dependencies:
     - datetime (stdlib)
 
 Author: VideoForge
-Version: 1.0
+Version: 1.1
 """
 
 # 1. Standard library
 import sqlite3
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
+
+# 2. Third-party libraries
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # 3. Local modules
 from utils.logger import setup_logger
 
 logger = setup_logger('database')
 
-DB_PATH = 'videoforge.db'
+
+def _resolve_db_path() -> str:
+    """
+    Resolve the database file path.
+
+    Reads VIDEOFORGE_DB_PATH from .env. If set, uses that path (enables
+    Dropbox / Google Drive sync across devices). If blank or unset, falls
+    back to videoforge.db in the project root.
+
+    Returns:
+        str: Absolute path to the SQLite database file.
+    """
+    env_path = os.getenv('VIDEOFORGE_DB_PATH', '').strip()
+    if env_path:
+        resolved = str(Path(env_path).expanduser().resolve())
+        logger.debug(f"Database path from VIDEOFORGE_DB_PATH: {resolved}")
+        return resolved
+    default = str(Path('videoforge.db').resolve())
+    logger.debug(f"Database path: default ({default})")
+    return default
+
+
+# Resolved once at import time — consistent within a process
+DB_PATH: str = _resolve_db_path()
 
 
 def get_connection() -> sqlite3.Connection:
     """
     Open and return a connection to the SQLite database.
 
+    The path is determined once at import time by _resolve_db_path() using
+    the VIDEOFORGE_DB_PATH environment variable (or the local default).
+
     Returns:
         sqlite3.Connection: Database connection with row_factory set to
                             sqlite3.Row for dict-style column access.
     """
+    # Ensure the parent directory exists (important when VIDEOFORGE_DB_PATH
+    # points to a Dropbox / Google Drive subfolder that hasn't been created yet)
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
@@ -57,28 +98,31 @@ def init_db() -> None:
         cursor = conn.cursor()
         cursor.executescript("""
             CREATE TABLE IF NOT EXISTS jobs (
-                id               TEXT PRIMARY KEY,
-                topic            TEXT NOT NULL,
-                bucket           TEXT,
-                hook_style       TEXT,
-                status           TEXT DEFAULT 'queued',
-                error_module     TEXT,
-                error_message    TEXT,
-                script_path      TEXT,
-                audio_path       TEXT,
-                images_dir       TEXT,
-                raw_video_path   TEXT,
-                final_video_path TEXT,
-                thumbnail_path   TEXT,
-                metadata_path    TEXT,
-                tiktok_url       TEXT,
-                youtube_url      TEXT,
-                tiktok_video_id  TEXT,
-                youtube_video_id TEXT,
-                duration_seconds REAL,
-                word_count       INTEGER,
-                created_at       TEXT DEFAULT (datetime('now')),
-                updated_at       TEXT DEFAULT (datetime('now'))
+                id                  TEXT PRIMARY KEY,
+                topic               TEXT NOT NULL,
+                bucket              TEXT,
+                hook_style          TEXT,
+                status              TEXT DEFAULT 'queued',
+                error_module        TEXT,
+                error_message       TEXT,
+                script_path         TEXT,
+                audio_path          TEXT,
+                images_dir          TEXT,
+                raw_video_path      TEXT,
+                final_video_path    TEXT,
+                thumbnail_path      TEXT,
+                metadata_path       TEXT,
+                tiktok_url          TEXT,
+                youtube_url         TEXT,
+                tiktok_video_id     TEXT,
+                youtube_video_id    TEXT,
+                duration_seconds    REAL,
+                word_count          INTEGER,
+                similarity_checked  INTEGER DEFAULT 0,
+                similar_to_job      TEXT,
+                similarity_score    REAL,
+                created_at          TEXT DEFAULT (datetime('now')),
+                updated_at          TEXT DEFAULT (datetime('now'))
             );
 
             CREATE TABLE IF NOT EXISTS analytics (
@@ -92,11 +136,55 @@ def init_db() -> None:
                 watch_time_avg  REAL,
                 pulled_at       TEXT DEFAULT (datetime('now'))
             );
+
+            -- Phase 11.v1.B: Priority Alert system
+            CREATE TABLE IF NOT EXISTS trend_scans (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                scanned_at      TEXT DEFAULT (datetime('now')),
+                topics_found    INTEGER DEFAULT 0,
+                new_alerts      INTEGER DEFAULT 0,
+                buckets_scanned TEXT,
+                status          TEXT DEFAULT 'complete'
+            );
+
+            CREATE TABLE IF NOT EXISTS priority_alerts (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                topic           TEXT NOT NULL,
+                bucket          TEXT,
+                spike_percent   REAL,
+                channel_fit     REAL,
+                hook_suggestion TEXT,
+                reframed_angle  TEXT,
+                window_hours    INTEGER DEFAULT 48,
+                triggered_at    TEXT DEFAULT (datetime('now')),
+                expires_at      TEXT,
+                status          TEXT DEFAULT 'active',
+                job_id          TEXT,
+                dismissed_at    TEXT
+            );
+
+            -- Phase 11.v1.D: Topic bank
+            CREATE TABLE IF NOT EXISTS topic_bank (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                topic           TEXT NOT NULL,
+                bucket          TEXT,
+                score           REAL,
+                status          TEXT DEFAULT 'pending',
+                hook_suggestion TEXT,
+                notes           TEXT,
+                archived        INTEGER DEFAULT 0,
+                archived_at     TEXT,
+                archive_reason  TEXT,
+                added_at        TEXT DEFAULT (datetime('now')),
+                updated_at      TEXT DEFAULT (datetime('now'))
+            );
         """)
         conn.commit()
         logger.info("Database schema ready")
     finally:
         conn.close()
+
+    _run_migrations()
 
 
 def create_job(
@@ -298,6 +386,372 @@ def insert_analytics(
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Live migrations — add columns to existing databases safely
+# ---------------------------------------------------------------------------
+
+def _run_migrations() -> None:
+    """
+    Apply any ALTER TABLE migrations needed for Phase 11+ on databases that
+    were created before these columns existed.  Each statement is wrapped in
+    its own try/except so a column-already-exists error does not abort the rest.
+    """
+    migrations = [
+        # 11.v1.C — similarity detection columns on jobs
+        "ALTER TABLE jobs ADD COLUMN similarity_checked INTEGER DEFAULT 0",
+        "ALTER TABLE jobs ADD COLUMN similar_to_job TEXT",
+        "ALTER TABLE jobs ADD COLUMN similarity_score REAL",
+    ]
+    conn = get_connection()
+    try:
+        for sql in migrations:
+            try:
+                conn.execute(sql)
+                conn.commit()
+            except Exception:
+                pass   # column already exists — safe to ignore
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Priority Alert helpers (11.v1.B)
+# ---------------------------------------------------------------------------
+
+def insert_trend_scan(
+    topics_found: int = 0,
+    new_alerts: int = 0,
+    buckets_scanned: str = '',
+    status: str = 'complete',
+) -> int:
+    """
+    Record a completed trend scan in trend_scans.
+
+    Args:
+        topics_found (int):    Number of trending topics examined.
+        new_alerts (int):      Number of priority_alerts created.
+        buckets_scanned (str): Comma-separated bucket names scanned.
+        status (str):          'complete' or 'error'.
+
+    Returns:
+        int: Rowid of the inserted scan record.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            """INSERT INTO trend_scans (topics_found, new_alerts, buckets_scanned, status)
+               VALUES (?, ?, ?, ?)""",
+            (topics_found, new_alerts, buckets_scanned, status),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def insert_priority_alert(
+    topic: str,
+    bucket: str,
+    spike_percent: float,
+    channel_fit: float,
+    hook_suggestion: str,
+    reframed_angle: str,
+    window_hours: int = 48,
+    expires_at: str = '',
+) -> int:
+    """
+    Create a new priority alert record.
+
+    Args:
+        topic (str):            Original trending topic string.
+        bucket (str):           Content bucket.
+        spike_percent (float):  Percentage spike vs prior 30-day average.
+        channel_fit (float):    Claude channel-fit score 1–10.
+        hook_suggestion (str):  Claude-suggested hook line.
+        reframed_angle (str):   Claude-suggested everyday engineering angle.
+        window_hours (int):     Hours until this alert expires.
+        expires_at (str):       ISO datetime string for expiry.
+
+    Returns:
+        int: Rowid of the inserted alert record.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            """INSERT INTO priority_alerts
+               (topic, bucket, spike_percent, channel_fit, hook_suggestion,
+                reframed_angle, window_hours, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (topic, bucket, spike_percent, channel_fit, hook_suggestion,
+             reframed_angle, window_hours, expires_at),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_active_alerts() -> list:
+    """
+    Fetch all non-expired, non-dismissed priority alerts ordered by channel_fit desc.
+
+    Returns:
+        list[dict]: Active alert rows.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT * FROM priority_alerts
+               WHERE status = 'active'
+                 AND (expires_at = '' OR expires_at > datetime('now'))
+               ORDER BY channel_fit DESC, triggered_at DESC"""
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_all_alerts(limit: int = 100) -> list:
+    """
+    Fetch all alerts (active, dismissed, expired) for history display.
+
+    Args:
+        limit (int): Maximum rows to return.
+
+    Returns:
+        list[dict]: Alert rows newest first.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM priority_alerts ORDER BY triggered_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def dismiss_alert(alert_id: int) -> None:
+    """
+    Mark a priority alert as dismissed.
+
+    Args:
+        alert_id (int): Alert primary key.
+    """
+    conn = get_connection()
+    try:
+        conn.execute(
+            """UPDATE priority_alerts
+               SET status = 'dismissed', dismissed_at = datetime('now')
+               WHERE id = ?""",
+            (alert_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def link_alert_to_job(alert_id: int, job_id: str) -> None:
+    """
+    Record which job was created from a fast-tracked priority alert.
+
+    Args:
+        alert_id (int): Alert primary key.
+        job_id (str):   Job identifier.
+    """
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE priority_alerts SET job_id = ?, status = 'fast_tracked' WHERE id = ?",
+            (job_id, alert_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_trend_scans(limit: int = 50) -> list:
+    """
+    Fetch recent trend scan history records.
+
+    Args:
+        limit (int): Maximum rows to return.
+
+    Returns:
+        list[dict]: Scan rows newest first.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM trend_scans ORDER BY scanned_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_last_scan_time() -> str | None:
+    """
+    Return the timestamp of the most recent trend scan, or None if no scans exist.
+
+    Returns:
+        str | None: ISO datetime string or None.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT scanned_at FROM trend_scans ORDER BY scanned_at DESC LIMIT 1"
+        ).fetchone()
+        return row['scanned_at'] if row else None
+    finally:
+        conn.close()
+
+
+def count_scans_since(since_iso: str) -> int:
+    """
+    Count how many trend scans have occurred since a given datetime.
+
+    Args:
+        since_iso (str): ISO datetime string lower bound.
+
+    Returns:
+        int: Number of scans since that time.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM trend_scans WHERE scanned_at >= ?",
+            (since_iso,),
+        ).fetchone()
+        return row['cnt'] or 0
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Topic bank helpers (11.v1.D)
+# ---------------------------------------------------------------------------
+
+def insert_topic(
+    topic: str,
+    bucket: str = '',
+    notes: str = '',
+    hook_suggestion: str = '',
+) -> int:
+    """
+    Add a new topic to the topic_bank with status='pending'.
+
+    Args:
+        topic (str):           Topic text.
+        bucket (str):          Content bucket.
+        notes (str):           Free-text notes.
+        hook_suggestion (str): Optional suggested hook.
+
+    Returns:
+        int: Rowid of the inserted topic.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            """INSERT INTO topic_bank (topic, bucket, notes, hook_suggestion, status)
+               VALUES (?, ?, ?, ?, 'pending')""",
+            (topic, bucket, notes, hook_suggestion),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_topics(include_archived: bool = False, limit: int = 500) -> list:
+    """
+    Fetch topics from the topic_bank.
+
+    Args:
+        include_archived (bool): If False, hide archived rows.
+        limit (int):             Maximum rows to return.
+
+    Returns:
+        list[dict]: Topic rows.
+    """
+    conn = get_connection()
+    try:
+        if include_archived:
+            rows = conn.execute(
+                "SELECT * FROM topic_bank ORDER BY added_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM topic_bank WHERE archived = 0 ORDER BY added_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def archive_topic(topic_id: int, reason: str = '') -> None:
+    """
+    Mark a topic_bank entry as archived.
+
+    Args:
+        topic_id (int): Topic primary key.
+        reason (str):   Optional reason for archiving.
+    """
+    conn = get_connection()
+    try:
+        conn.execute(
+            """UPDATE topic_bank
+               SET archived = 1, archived_at = datetime('now'), archive_reason = ?,
+                   updated_at = datetime('now')
+               WHERE id = ?""",
+            (reason, topic_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def unarchive_topic(topic_id: int) -> None:
+    """
+    Restore an archived topic_bank entry.
+
+    Args:
+        topic_id (int): Topic primary key.
+    """
+    conn = get_connection()
+    try:
+        conn.execute(
+            """UPDATE topic_bank
+               SET archived = 0, archived_at = NULL, archive_reason = NULL,
+                   updated_at = datetime('now')
+               WHERE id = ?""",
+            (topic_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_topic(topic_id: int) -> None:
+    """
+    Permanently delete a topic_bank entry.
+
+    Args:
+        topic_id (int): Topic primary key.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM topic_bank WHERE id = ?", (topic_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 if __name__ == '__main__':
     init_db()
+    _run_migrations()
     print("Database initialised successfully at", DB_PATH)
