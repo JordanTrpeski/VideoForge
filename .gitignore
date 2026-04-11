@@ -14,9 +14,13 @@ env
 
 # API credentials — NEVER commit
 client_secrets.json
+client_secrets.json.json
 client_secret_*.json
 token.json
 token_*.json
+
+# Claude Code project memory — local only
+.claude/
 
 # Logs
 *.log

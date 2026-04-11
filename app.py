@@ -41,11 +41,15 @@ sys.path.insert(0, str(Path(__file__).parent))
 from database import (create_job, get_all_jobs, get_job, get_next_job_id,
                       init_db, update_job_field, update_job_status)
 from utils.logger import setup_logger
+from webhook import webhook_bp
 
 app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'videoforge-dev-secret-change-me')
 
 logger = setup_logger('app')
+
+# Register the webhook blueprint (provides /webhook/new-topic)
+app.register_blueprint(webhook_bp)
 
 # ---------------------------------------------------------------------------
 # Pipeline state  (shared across threads)
@@ -887,7 +891,20 @@ def api_test_prompt():
 
 @app.route('/api/refresh-analytics', methods=['POST'])
 def api_refresh_analytics():
-    return jsonify({'message': 'Analytics engine not yet implemented (Phase 10)'})
+    """Manually trigger an analytics pull for all posted jobs."""
+    try:
+        from modules.analytics_engine import pull_all_analytics
+        summary = pull_all_analytics()
+        return jsonify({
+            'message':        'Analytics pull complete',
+            'jobs_processed':  summary['jobs_processed'],
+            'youtube_updated': summary['youtube_updated'],
+            'tiktok_updated':  summary['tiktok_updated'],
+            'errors':          summary['errors'],
+        })
+    except Exception as exc:
+        logger.error(f"api_refresh_analytics error: {exc}", exc_info=True)
+        return jsonify({'error': str(exc)}), 500
 
 
 # ---------------------------------------------------------------------------
@@ -902,25 +919,6 @@ def serve_video(filename):
 @app.route('/output/thumbnails/<path:filename>')
 def serve_thumbnail(filename):
     return send_from_directory(Path('output/thumbnails').resolve(), filename)
-
-
-# ---------------------------------------------------------------------------
-# Webhook  (Make.com / Google Sheets automation)
-# ---------------------------------------------------------------------------
-
-@app.route('/webhook/new-topic', methods=['POST'])
-def webhook_new_topic():
-    data   = request.get_json() or {}
-    topic  = data.get('topic', '').strip()
-    if not topic:
-        return jsonify({'error': 'topic is required'}), 400
-    bucket = data.get('bucket', 'elec')
-    hook   = data.get('hook_style', 'shocking_fact')
-    init_db()
-    jid = get_next_job_id()
-    create_job(job_id=jid, topic=topic, bucket=bucket, hook_style=hook)
-    logger.info(f"[JOB {jid}] Created via webhook — topic: '{topic}'")
-    return jsonify({'job_id': jid, 'status': 'queued'})
 
 
 # ---------------------------------------------------------------------------
@@ -944,11 +942,30 @@ def reauth_tiktok():
 
 
 # ---------------------------------------------------------------------------
+# Scheduler status API (Phase 10)
+# ---------------------------------------------------------------------------
+
+@app.route('/api/scheduler-status')
+def api_scheduler_status():
+    """Return the current scheduler state (running jobs and next fire times)."""
+    try:
+        from scheduler import get_scheduler_status
+        return jsonify(get_scheduler_status())
+    except Exception as exc:
+        return jsonify({'running': False, 'error': str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
     init_db()
+
+    # Start APScheduler in the background (Sunday batch + Monday analytics)
+    from scheduler import start_scheduler
+    start_scheduler()
+
     port = int(os.getenv('FLASK_PORT', 5000))
     logger.info(f"Starting VideoForge dashboard at http://localhost:{port}")
     app.run(host='127.0.0.1', port=port, debug=False, threaded=True)

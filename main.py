@@ -367,6 +367,44 @@ def cmd_upload(args) -> None:
     print()
 
 
+def cmd_batch(args) -> None:
+    """
+    Manually trigger a batch run of N jobs from the queue without waiting
+    for the Sunday schedule. Picks the oldest N queued jobs and runs the full
+    pipeline for each in sequence, stopping at the review gate.
+
+    Args:
+        args: Parsed argparse namespace with count attribute.
+    """
+    from database import init_db
+    from scheduler import run_batch
+
+    init_db()
+    count = args.count
+
+    print(f"\nVideoForge — manual batch run ({count} job(s))")
+    print("=" * 50)
+
+    summary = run_batch(count=count)
+
+    print("=" * 50)
+    print(f"Batch complete:")
+    print(f"  Jobs attempted : {summary['total']}")
+    print(f"  Succeeded      : {summary['succeeded']}")
+    print(f"  Failed         : {summary['failed']}")
+    print(f"  Total time     : {summary['elapsed']}s")
+
+    if summary['succeeded'] > 0:
+        print(f"\nJobs that succeeded are now at 'review' status.")
+        print("Open the dashboard (python app.py) to approve and upload.")
+
+    if summary['failed'] > 0:
+        print(f"\nFailed jobs: check logs/errors.log for details.")
+        sys.exit(1)
+
+    print()
+
+
 def cmd_test_connections(args) -> None:
     """
     Run the API connection test suite.
@@ -504,11 +542,22 @@ def build_parser() -> argparse.ArgumentParser:
     # list-jobs
     subparsers.add_parser('list-jobs', help='List all jobs')
 
+    # batch
+    p_batch = subparsers.add_parser(
+        'batch',
+        help='Run pipeline for N queued jobs without waiting for the Sunday schedule'
+    )
+    p_batch.add_argument(
+        '--count', type=int, default=None, metavar='N',
+        help='Number of jobs to process (default: batch_size_per_week from config.json)'
+    )
+
     return parser
 
 
 COMMAND_MAP = {
     'test-connections':    cmd_test_connections,
+    'batch':               cmd_batch,
     'generate-script':     cmd_generate_script,
     'generate-voice':      cmd_generate_voice,
     'generate-images':     cmd_generate_images,
