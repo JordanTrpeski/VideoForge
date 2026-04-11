@@ -48,6 +48,18 @@ app.secret_key = os.getenv('FLASK_SECRET_KEY', 'videoforge-dev-secret-change-me'
 
 logger = setup_logger('app')
 
+
+@app.template_filter('fromjson')
+def fromjson_filter(value):
+    """Parse a JSON string inside a Jinja2 template. Returns [] on any error."""
+    import json as _json
+    if not value:
+        return []
+    try:
+        return _json.loads(value)
+    except Exception:
+        return []
+
 # Register the webhook blueprint (provides /webhook/new-topic)
 app.register_blueprint(webhook_bp)
 
@@ -1066,12 +1078,28 @@ def fast_track_alert(alert_id):
 def research_topics():
     from database import get_topics
     show_archived = request.args.get('archived', '0') == '1'
+    bucket_filter = request.args.get('bucket', '')
+    sort_by       = request.args.get('sort', 'added_at')   # added_at | final_score | status
+
     topics = get_topics(include_archived=show_archived)
+
+    if bucket_filter:
+        topics = [t for t in topics if t.get('bucket') == bucket_filter]
+
+    # Re-sort if requested
+    if sort_by == 'final_score':
+        topics = sorted(topics, key=lambda t: (t.get('final_score') or -1), reverse=True)
+    elif sort_by == 'status':
+        status_order = {'pending': 0, 'scored': 1, 'queued': 2, 'used': 3, 'archived': 9}
+        topics = sorted(topics, key=lambda t: status_order.get(t.get('status', ''), 5))
+
     return render_template(
         'topics.html',
         active='topics',
         topics=topics,
         show_archived=show_archived,
+        bucket_filter=bucket_filter,
+        sort_by=sort_by,
     )
 
 
@@ -1132,6 +1160,115 @@ def research_topics_queue(topic_id):
     )
     flash(f'Job {jid} added to queue from topic bank.', 'success')
     return redirect(url_for('research_topics'))
+
+
+# ---------------------------------------------------------------------------
+# Topic scoring API routes (11.v2.A / 11.v2.B)
+# ---------------------------------------------------------------------------
+
+@app.route('/research/topics/<int:topic_id>/score', methods=['POST'])
+def research_topics_score(topic_id):
+    """Run the scoring engine for a single topic and refresh the page."""
+    from database import get_topics
+    from modules.research_engine import score_topic
+    topics = get_topics(include_archived=True)
+    t = next((x for x in topics if x['id'] == topic_id), None)
+    if not t:
+        flash('Topic not found.', 'error')
+        return redirect(url_for('research_topics'))
+
+    config = _load_config()
+    result = score_topic(
+        topic=t['topic'],
+        bucket=t.get('bucket') or 'elec',
+        config=config,
+        topic_id=topic_id,
+    )
+
+    if result.get('success'):
+        flash(
+            f'\u201c{t["topic"]}\u201d scored: {result["final_score"]}/10',
+            'success',
+        )
+    else:
+        flash('Scoring failed — check logs for details.', 'error')
+
+    return redirect(url_for('research_topics'))
+
+
+@app.route('/api/score-topic', methods=['POST'])
+def api_score_topic():
+    """
+    Score a topic via the research engine and return JSON.
+
+    Request JSON: {topic, bucket, topic_id (optional)}
+    Response JSON: full score result dict
+    """
+    data     = request.get_json(silent=True) or {}
+    topic    = str(data.get('topic', '')).strip()
+    bucket   = str(data.get('bucket', 'elec')).strip()
+    topic_id = int(data.get('topic_id', 0))
+
+    if not topic:
+        return jsonify({'error': 'topic is required'}), 400
+
+    try:
+        from modules.research_engine import score_topic
+        config = _load_config()
+        result = score_topic(topic=topic, bucket=bucket, config=config, topic_id=topic_id)
+        return jsonify(result)
+    except Exception as exc:
+        logger.error(f"api_score_topic error: {exc}", exc_info=True)
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/score-bulk', methods=['POST'])
+def api_score_bulk():
+    """
+    Score up to 20 topics in one call.
+
+    Request JSON: {topics: [{topic, bucket, id?}, ...]}
+    Response JSON: {results: [...sorted by final_score desc...]}
+    """
+    data   = request.get_json(silent=True) or {}
+    topics = data.get('topics', [])
+    if not topics or not isinstance(topics, list):
+        return jsonify({'error': 'topics array is required'}), 400
+    if len(topics) > 20:
+        topics = topics[:20]
+
+    try:
+        from modules.research_engine import score_bulk
+        config  = _load_config()
+        results = score_bulk(topics=topics, config=config)
+        return jsonify({'results': results})
+    except Exception as exc:
+        logger.error(f"api_score_bulk error: {exc}", exc_info=True)
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/research/topics/score-top', methods=['POST'])
+def research_score_top():
+    """Score the top N unscored topics and redirect back."""
+    n = int(request.form.get('n', 5))
+    from database import get_topics
+    from modules.research_engine import score_topic
+    config   = _load_config()
+    unscored = [t for t in get_topics() if not t.get('final_score')][:n]
+
+    scored = 0
+    for t in unscored:
+        r = score_topic(
+            topic=t['topic'],
+            bucket=t.get('bucket') or 'elec',
+            config=config,
+            topic_id=t['id'],
+        )
+        if r.get('success'):
+            scored += 1
+
+    flash(f'Scored {scored} topic{"s" if scored != 1 else ""}.', 'success')
+    return redirect(url_for('research_topics', sort='final_score'))
 
 
 # ---------------------------------------------------------------------------

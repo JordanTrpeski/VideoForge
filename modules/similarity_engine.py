@@ -178,7 +178,7 @@ Respond with only valid JSON. No text outside the JSON."""
         warning    = score >= SIMILARITY_THRESHOLD
 
         logger.info(
-            f"similarity_engine: '{new_topic}' → score: {score:.0f}%, "
+            f"similarity_engine: '{new_topic}' -> score: {score:.0f}%, "
             f"match: '{sim_topic}', warning: {warning}"
         )
 

@@ -401,6 +401,16 @@ def _run_migrations() -> None:
         "ALTER TABLE jobs ADD COLUMN similarity_checked INTEGER DEFAULT 0",
         "ALTER TABLE jobs ADD COLUMN similar_to_job TEXT",
         "ALTER TABLE jobs ADD COLUMN similarity_score REAL",
+        # 11.v2.A — full scoring columns on topic_bank
+        "ALTER TABLE topic_bank ADD COLUMN trend_score REAL",
+        "ALTER TABLE topic_bank ADD COLUMN competition_score REAL",
+        "ALTER TABLE topic_bank ADD COLUMN channel_fit_score REAL",
+        "ALTER TABLE topic_bank ADD COLUMN performance_score REAL",
+        "ALTER TABLE topic_bank ADD COLUMN final_score REAL",
+        "ALTER TABLE topic_bank ADD COLUMN alt_angles TEXT",
+        "ALTER TABLE topic_bank ADD COLUMN competition_level TEXT",
+        "ALTER TABLE topic_bank ADD COLUMN scored_at TEXT",
+        "ALTER TABLE topic_bank ADD COLUMN score_version INTEGER DEFAULT 0",
     ]
     conn = get_connection()
     try:
@@ -747,6 +757,117 @@ def delete_topic(topic_id: int) -> None:
     try:
         conn.execute("DELETE FROM topic_bank WHERE id = ?", (topic_id,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Topic scoring helpers (11.v2.A)
+# ---------------------------------------------------------------------------
+
+def update_topic_score(
+    topic_id: int,
+    trend_score: float,
+    competition_score: float,
+    channel_fit_score: float,
+    performance_score: float,
+    final_score: float,
+    alt_angles: str = '',
+    competition_level: str = '',
+    score_version: int = 1,
+) -> None:
+    """
+    Write scoring results back to a topic_bank row.
+
+    Args:
+        topic_id (int):           Primary key of the topic_bank row.
+        trend_score (float):      0-10 Google Trends spike score.
+        competition_score (float): 0-10 (inverted — low competition = high score).
+        channel_fit_score (float): 0-10 Claude channel relevance score.
+        performance_score (float): 0-10 channel analytics performance score.
+        final_score (float):       0-10 weighted composite.
+        alt_angles (str):          JSON-encoded list of 3 alternative angles.
+        competition_level (str):   'low' / 'medium' / 'high'.
+        score_version (int):       Monotonically increasing version counter.
+    """
+    conn = get_connection()
+    try:
+        conn.execute(
+            """UPDATE topic_bank
+               SET trend_score       = ?,
+                   competition_score = ?,
+                   channel_fit_score = ?,
+                   performance_score = ?,
+                   final_score       = ?,
+                   alt_angles        = ?,
+                   competition_level = ?,
+                   score_version     = ?,
+                   scored_at         = datetime('now'),
+                   status            = 'scored',
+                   updated_at        = datetime('now')
+               WHERE id = ?""",
+            (trend_score, competition_score, channel_fit_score, performance_score,
+             final_score, alt_angles, competition_level, score_version, topic_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_top_topics(limit: int = 20, bucket: str = '') -> list:
+    """
+    Return scored topics ordered by final_score descending.
+
+    Args:
+        limit (int):  Maximum rows to return.
+        bucket (str): If set, filter to this content bucket.
+
+    Returns:
+        list[dict]: Topic rows with score fields populated.
+    """
+    conn = get_connection()
+    try:
+        if bucket:
+            rows = conn.execute(
+                """SELECT * FROM topic_bank
+                   WHERE archived = 0 AND final_score IS NOT NULL AND bucket = ?
+                   ORDER BY final_score DESC LIMIT ?""",
+                (bucket, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT * FROM topic_bank
+                   WHERE archived = 0 AND final_score IS NOT NULL
+                   ORDER BY final_score DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_analytics_summary() -> dict:
+    """
+    Compute average views/likes/watch_time per bucket from the analytics table.
+    Used by the scoring engine to weight topics by proven channel performance.
+
+    Returns:
+        dict: {bucket: {avg_views, avg_likes, avg_watch_time, count}}
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT j.bucket,
+                      AVG(a.views)          AS avg_views,
+                      AVG(a.likes)          AS avg_likes,
+                      AVG(a.watch_time_avg) AS avg_watch_time,
+                      COUNT(*)              AS cnt
+               FROM analytics a
+               JOIN jobs j ON a.job_id = j.id
+               WHERE j.bucket IS NOT NULL
+               GROUP BY j.bucket"""
+        ).fetchall()
+        return {r['bucket']: dict(r) for r in rows}
     finally:
         conn.close()
 

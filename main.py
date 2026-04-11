@@ -590,6 +590,75 @@ def cmd_export_topics(args) -> None:
     print()
 
 
+def cmd_score_topic(args) -> None:
+    """
+    Score a single topic with the research engine and print the result.
+
+    Args:
+        args: Parsed argparse namespace with topic, bucket, id attributes.
+    """
+    import json
+    from database import init_db
+    from modules.research_engine import score_topic
+    init_db()
+    config = load_config()
+
+    print(f"\nScoring: '{args.topic}' (bucket={args.bucket})")
+    result = score_topic(
+        topic=args.topic,
+        bucket=args.bucket,
+        config=config,
+        topic_id=getattr(args, 'id', 0),
+    )
+    if not result.get('success'):
+        print("  ERROR: Scoring failed")
+        return
+
+    print(f"\n  Final score:        {result['final_score']:.1f} / 10")
+    print(f"  Trend score:        {result['trend_score']:.1f}")
+    print(f"  Competition score:  {result['competition_score']:.1f}  ({result['competition_level']})")
+    print(f"  Channel-fit score:  {result['channel_fit_score']:.1f}")
+    print(f"  Performance score:  {result['performance_score']:.1f}")
+    if result.get('hook_suggestion'):
+        print(f"\n  Hook:  {result['hook_suggestion']}")
+    if result.get('alt_angles'):
+        print("\n  Alt angles:")
+        for angle in result['alt_angles']:
+            print(f"    • {angle}")
+    print()
+
+
+def cmd_score_unscored(args) -> None:
+    """
+    Score all unscored topics in the topic bank up to --limit.
+
+    Args:
+        args: Parsed argparse namespace with limit attribute.
+    """
+    from database import init_db, get_topics
+    from modules.research_engine import score_topic
+    init_db()
+    config = load_config()
+
+    unscored = [t for t in get_topics() if not t.get('final_score')][:args.limit]
+    if not unscored:
+        print("\nNo unscored topics found.\n")
+        return
+
+    print(f"\nScoring {len(unscored)} topic(s)…\n")
+    for i, t in enumerate(unscored, 1):
+        r = score_topic(
+            topic=t['topic'],
+            bucket=t.get('bucket') or 'elec',
+            config=config,
+            topic_id=t['id'],
+        )
+        status = f"{r['final_score']:.1f}/10" if r.get('success') else 'FAILED'
+        print(f"  [{i}/{len(unscored)}] {t['topic'][:60]:<60} {status}")
+
+    print("\nDone.\n")
+
+
 def cmd_test_connections(args) -> None:
     """
     Run the API connection test suite.
@@ -765,6 +834,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_export.add_argument('--output', type=str, default='topics_export.csv',
                           help='Output CSV file path')
 
+    # score-topic (11.v2.A)
+    p_score = subparsers.add_parser('score-topic', help='Score a topic with the research engine')
+    p_score.add_argument('topic', type=str, help='Topic text to score')
+    p_score.add_argument('--bucket', type=str, choices=['elec', 'infra', 'vehicle', 'flaw'],
+                         default='elec', help='Content bucket')
+    p_score.add_argument('--id', type=int, default=0, metavar='TOPIC_ID',
+                         help='Topic bank ID to save result back to (optional)')
+
+    # score-unscored (11.v2.A)
+    p_su = subparsers.add_parser('score-unscored', help='Score all unscored topics in the bank')
+    p_su.add_argument('--limit', type=int, default=20, help='Max topics to score (default 20)')
+
     return parser
 
 
@@ -777,6 +858,8 @@ COMMAND_MAP = {
     'add-topic':           cmd_add_topic,
     'archive-topic':       cmd_archive_topic,
     'export-topics':       cmd_export_topics,
+    'score-topic':         cmd_score_topic,
+    'score-unscored':      cmd_score_unscored,
     'generate-script':     cmd_generate_script,
     'generate-voice':      cmd_generate_voice,
     'generate-images':     cmd_generate_images,

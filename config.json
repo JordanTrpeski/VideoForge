@@ -97,6 +97,12 @@
   },
 
   "research": {
+    "scoring_weights": {
+      "trend":       0.30,
+      "competition": 0.30,
+      "channel_fit": 0.25,
+      "performance": 0.15
+    },
     "priority_alert_threshold": 150,
     "priority_alert_fit_minimum": 7.0,
     "fast_track_window_hours": 48,

@@ -2,16 +2,26 @@
 {% block title %}Topic Bank — VideoForge{% endblock %}
 
 {% block content %}
-<div class="flex items-center justify-between mb-6">
+<div class="flex items-center justify-between mb-5">
     <div>
         <h1 class="text-xl font-semibold text-slate-100">Topic Bank</h1>
-        <p class="text-xs mt-0.5" style="color:var(--muted)">Store, organise, and queue topics before adding them to the pipeline</p>
+        <p class="text-xs mt-0.5" style="color:var(--muted)">Score, organise, and queue topics for the pipeline</p>
     </div>
-    <div class="flex items-center gap-3">
+    <div class="flex items-center gap-2">
+        <form method="POST" action="/research/topics/score-top">
+            <input type="hidden" name="n" value="5">
+            <button type="submit" class="btn btn-primary" title="Run the scoring engine on the 5 oldest unscored topics">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                </svg>
+                Score top 5
+            </button>
+        </form>
         {% if show_archived %}
-        <a href="/research/topics" class="btn btn-ghost text-xs">Hide archived</a>
+        <a href="{{ request.path }}?{{ request.query_string.decode().replace('archived=1','archived=0') }}" class="btn btn-ghost text-xs">Hide archived</a>
         {% else %}
-        <a href="/research/topics?archived=1" class="btn btn-ghost text-xs">Show archived</a>
+        <a href="{{ request.path }}?archived=1" class="btn btn-ghost text-xs">Show archived</a>
         {% endif %}
     </div>
 </div>
@@ -29,15 +39,127 @@
 {% endif %}
 {% endwith %}
 
+<!-- Single scorer -->
+<div class="card rounded-xl p-5 mb-5">
+    <h2 class="font-semibold text-white text-sm mb-4">Score a topic</h2>
+    <div class="grid grid-cols-2 gap-5">
+        <!-- Input form -->
+        <div>
+            <div class="space-y-3">
+                <div class="flex gap-3">
+                    <div class="flex-1">
+                        <label class="block text-xs text-slate-400 mb-1">Topic</label>
+                        <input type="text" id="score-topic-input" class="inp"
+                               placeholder="e.g. Why bridges oscillate in wind" autocomplete="off">
+                    </div>
+                    <div class="w-32">
+                        <label class="block text-xs text-slate-400 mb-1">Bucket</label>
+                        <select id="score-bucket-input" class="inp">
+                            <option value="elec">Electrical</option>
+                            <option value="infra">Infrastructure</option>
+                            <option value="vehicle">Vehicles</option>
+                            <option value="flaw">The Flaw</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <button id="btn-score-topic" class="btn btn-primary">Score it</button>
+                    <button id="btn-score-and-add" class="btn btn-ghost">Score &amp; add to bank</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Score result panel -->
+        <div id="score-result-panel" class="hidden rounded-lg p-4" style="background:#0d1526;border:1px solid var(--border)">
+            <div class="flex items-start justify-between mb-3">
+                <div>
+                    <div id="sr-topic" class="text-white font-semibold text-sm"></div>
+                    <div id="sr-bucket" class="text-xs mt-0.5" style="color:var(--muted)"></div>
+                </div>
+                <div id="sr-final-badge" class="text-2xl font-bold"></div>
+            </div>
+
+            <!-- Score bars -->
+            <div class="space-y-2 mb-3">
+                {% for key, label in [('trend','Trends'),('competition','Competition'),('fit','Channel fit'),('performance','Performance')] %}
+                <div class="flex items-center gap-2">
+                    <span class="text-xs w-20 flex-shrink-0" style="color:var(--muted)">{{ label }}</span>
+                    <div class="flex-1 h-1.5 rounded-full" style="background:#263148">
+                        <div id="sr-bar-{{ key }}" class="h-1.5 rounded-full bg-blue-500" style="width:0%"></div>
+                    </div>
+                    <span id="sr-val-{{ key }}" class="text-xs w-6 text-right text-slate-300"></span>
+                </div>
+                {% endfor %}
+            </div>
+
+            <!-- Hook + competition level -->
+            <div id="sr-hook" class="text-xs text-blue-300 mb-2 hidden"></div>
+            <div id="sr-comp-level" class="mb-2 hidden">
+                <span class="badge badge-gray text-xs" id="sr-comp-badge"></span>
+            </div>
+
+            <!-- Alt angles -->
+            <div id="sr-angles-wrap" class="hidden">
+                <div class="text-xs text-slate-400 mb-1">Alternative angles:</div>
+                <ul id="sr-angles-list" class="space-y-0.5 text-xs text-slate-300 list-disc list-inside"></ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Bulk scorer -->
+<div class="card rounded-xl p-5 mb-5">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="font-semibold text-white text-sm">Bulk scorer</h2>
+        <span class="text-xs" style="color:var(--muted)">Up to 20 topics — one per line</span>
+    </div>
+    <div class="grid grid-cols-2 gap-5">
+        <div class="space-y-3">
+            <div>
+                <label class="block text-xs text-slate-400 mb-1">Topics</label>
+                <textarea id="bulk-topics-input" rows="6" class="inp font-mono text-xs"
+                          placeholder="Why bridges oscillate in wind&#10;How traffic lights decide who goes first&#10;Why skyscrapers sway"></textarea>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Bucket</label>
+                    <select id="bulk-bucket-input" class="inp">
+                        <option value="elec">Electrical</option>
+                        <option value="infra">Infrastructure</option>
+                        <option value="vehicle">Vehicles</option>
+                        <option value="flaw">The Flaw</option>
+                    </select>
+                </div>
+                <div class="flex items-end">
+                    <button id="btn-bulk-score" class="btn btn-primary w-full justify-center">Score all</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bulk results -->
+        <div>
+            <div id="bulk-results-empty" class="text-center pt-10" style="color:var(--muted)">Results will appear here</div>
+            <div id="bulk-results-table" class="hidden">
+                <div class="flex items-center justify-between mb-2">
+                    <div class="text-xs font-semibold text-slate-300">Ranked results</div>
+                    <button id="btn-add-top5" class="btn btn-ghost hidden" style="font-size:11px;padding:3px 10px">
+                        Add top 5 to bank
+                    </button>
+                </div>
+                <div id="bulk-rows" class="space-y-1.5 max-h-52 overflow-y-auto pr-1"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Add topic form -->
-<div class="card rounded-xl p-5 mb-6">
-    <h2 class="font-semibold text-white text-sm mb-4">Add topic</h2>
+<div class="card rounded-xl p-5 mb-5">
+    <h2 class="font-semibold text-white text-sm mb-4">Add topic manually</h2>
     <form method="POST" action="/research/topics/add" class="flex flex-wrap gap-3 items-end">
         <div class="flex-1 min-w-48">
             <label class="block text-xs text-slate-400 mb-1">Topic <span class="text-red-400">*</span></label>
             <input type="text" name="topic" class="inp" required
-                   placeholder="e.g. Why bridges oscillate in wind"
-                   autocomplete="off">
+                   placeholder="e.g. Why bridges oscillate in wind" autocomplete="off">
         </div>
         <div class="w-36">
             <label class="block text-xs text-slate-400 mb-1">Bucket</label>
@@ -50,13 +172,30 @@
         </div>
         <div class="flex-1 min-w-48">
             <label class="block text-xs text-slate-400 mb-1">Notes</label>
-            <input type="text" name="notes" class="inp"
-                   placeholder="Optional context or angle idea">
+            <input type="text" name="notes" class="inp" placeholder="Optional context or angle idea">
         </div>
         <div class="flex-shrink-0">
             <button type="submit" class="btn btn-primary">Add to bank</button>
         </div>
     </form>
+</div>
+
+<!-- Filter bar -->
+<div class="flex items-center gap-3 mb-3 flex-wrap">
+    <span class="text-xs font-semibold text-slate-400">Filter:</span>
+    {% for val, label in [('','All buckets'),('elec','Electrical'),('infra','Infrastructure'),('vehicle','Vehicles'),('flaw','The Flaw')] %}
+    <a href="?bucket={{ val }}&sort={{ sort_by }}{% if show_archived %}&archived=1{% endif %}"
+       class="badge {% if bucket_filter == val %}badge-blue{% else %}badge-gray{% endif %} cursor-pointer">
+        {{ label }}
+    </a>
+    {% endfor %}
+    <span class="ml-3 text-xs font-semibold text-slate-400">Sort:</span>
+    {% for val, label in [('added_at','Date added'),('final_score','Score'),('status','Status')] %}
+    <a href="?bucket={{ bucket_filter }}&sort={{ val }}{% if show_archived %}&archived=1{% endif %}"
+       class="badge {% if sort_by == val %}badge-blue{% else %}badge-gray{% endif %} cursor-pointer">
+        {{ label }}
+    </a>
+    {% endfor %}
 </div>
 
 <!-- Topic table -->
@@ -68,7 +207,7 @@
                 <th class="text-left" style="width:36px">#</th>
                 <th class="text-left">Topic</th>
                 <th class="text-left">Bucket</th>
-                <th class="text-left">Notes</th>
+                <th class="text-right">Score</th>
                 <th class="text-left">Status</th>
                 <th class="text-left">Added</th>
                 <th></th>
@@ -76,34 +215,60 @@
         </thead>
         <tbody>
             {% for t in topics %}
-            <tr {% if t.archived %}style="opacity:0.45"{% endif %}>
+            <tr {% if t.archived %}style="opacity:0.4"{% endif %}>
                 <td class="font-mono text-xs text-slate-500">{{ t.id }}</td>
                 <td>
                     <span class="{% if t.archived %}line-through text-slate-500{% else %}text-slate-100 font-medium{% endif %}">
                         {{ t.topic }}
                     </span>
+                    {% if t.hook_suggestion %}
+                    <div class="text-xs mt-0.5 text-blue-400">Hook: {{ t.hook_suggestion }}</div>
+                    {% endif %}
                     {% if t.archived and t.archive_reason %}
                     <div class="text-xs mt-0.5" style="color:var(--muted)">Archived: {{ t.archive_reason }}</div>
                     {% endif %}
-                    {% if t.hook_suggestion %}
-                    <div class="text-xs mt-0.5 text-blue-400">Hook: {{ t.hook_suggestion }}</div>
+                    {% if t.alt_angles %}
+                    {% set angles = t.alt_angles | tojson | fromjson %}
+                    {% if angles %}
+                    <div class="text-xs mt-0.5 text-slate-500 cursor-pointer hover:text-slate-300"
+                         onclick="this.nextElementSibling.classList.toggle('hidden')">
+                        {{ angles|length }} alt angle{% if angles|length != 1 %}s{% endif %} ▸
+                    </div>
+                    <ul class="hidden text-xs text-slate-400 mt-0.5 list-disc list-inside space-y-0.5">
+                        {% for a in angles %}<li>{{ a }}</li>{% endfor %}
+                    </ul>
+                    {% endif %}
                     {% endif %}
                 </td>
                 <td>
                     {% if t.bucket %}
                     <span class="badge badge-gray">{{ t.bucket }}</span>
+                    {% else %}<span style="color:var(--muted)">—</span>{% endif %}
+                </td>
+                <td class="text-right">
+                    {% if t.final_score is not none %}
+                    <span class="font-bold text-sm
+                        {% if t.final_score >= 8 %}text-green-400
+                        {% elif t.final_score >= 6 %}text-blue-400
+                        {% elif t.final_score >= 4 %}text-amber-400
+                        {% else %}text-red-400{% endif %}">
+                        {{ "%.1f"|format(t.final_score) }}
+                    </span>
+                    {% if t.competition_level %}
+                    <div class="text-xs mt-0.5 {% if t.competition_level == 'low' %}text-green-400{% elif t.competition_level == 'medium' %}text-amber-400{% else %}text-red-400{% endif %}">
+                        {{ t.competition_level }} comp
+                    </div>
+                    {% endif %}
                     {% else %}
                     <span style="color:var(--muted)">—</span>
                     {% endif %}
-                </td>
-                <td class="text-xs" style="color:var(--muted); max-width:180px">
-                    {{ t.notes or '—' }}
                 </td>
                 <td>
                     <span class="badge
                         {% if t.archived %}badge-gray
                         {% elif t.status == 'used' %}badge-green
-                        {% elif t.status == 'pending' %}badge-blue
+                        {% elif t.status == 'scored' %}badge-blue
+                        {% elif t.status == 'queued' %}badge-purple
                         {% else %}badge-gray{% endif %}">
                         {% if t.archived %}archived{% else %}{{ t.status }}{% endif %}
                     </span>
@@ -116,33 +281,31 @@
                         {% if not t.archived %}
                         <form method="POST" action="/research/topics/{{ t.id }}/queue">
                             <button type="submit" class="btn btn-success"
+                                    style="padding:3px 10px;font-size:11px">Queue</button>
+                        </form>
+                        <form method="POST" action="/research/topics/{{ t.id }}/score">
+                            <button type="submit" class="btn btn-ghost"
                                     style="padding:3px 10px;font-size:11px"
-                                    title="Add to job queue">
-                                Queue
+                                    title="Re-score this topic">
+                                {% if t.final_score is not none %}Re-score{% else %}Score{% endif %}
                             </button>
                         </form>
                         <button type="button"
                                 class="btn btn-ghost"
                                 style="padding:3px 10px;font-size:11px"
-                                onclick="showArchiveModal({{ t.id }}, {{ t.topic|tojson }})"
-                                title="Archive topic">
+                                onclick="showArchiveModal({{ t.id }}, {{ t.topic|tojson }})">
                             Archive
                         </button>
                         {% else %}
                         <form method="POST" action="/research/topics/{{ t.id }}/unarchive">
                             <button type="submit" class="btn btn-ghost"
-                                    style="padding:3px 10px;font-size:11px">
-                                Restore
-                            </button>
+                                    style="padding:3px 10px;font-size:11px">Restore</button>
                         </form>
                         {% endif %}
                         <form method="POST" action="/research/topics/{{ t.id }}/delete"
-                              onsubmit="return confirm('Permanently delete this topic? This cannot be undone.')">
+                              onsubmit="return confirm('Permanently delete this topic?')">
                             <button type="submit" class="btn btn-danger"
-                                    style="padding:3px 10px;font-size:11px"
-                                    title="Delete permanently">
-                                Delete
-                            </button>
+                                    style="padding:3px 10px;font-size:11px">Delete</button>
                         </form>
                     </div>
                 </td>
@@ -153,8 +316,8 @@
 </div>
 <p class="text-xs mt-3" style="color:var(--muted)">
     {{ topics|length }} topic{% if topics|length != 1 %}s{% endif %}
-    {% if not show_archived %} (archived hidden —
-    <a href="/research/topics?archived=1" class="text-blue-400 hover:underline">show all</a>)
+    {% if not show_archived %}
+    — <a href="?bucket={{ bucket_filter }}&sort={{ sort_by }}&archived=1" class="text-blue-400 hover:underline">show archived</a>
     {% endif %}
 </p>
 {% else %}
@@ -162,8 +325,8 @@
     {% if show_archived %}
     No topics in the bank yet. Add one above.
     {% else %}
-    No active topics. All topics may be archived —
-    <a href="/research/topics?archived=1" class="text-blue-400 hover:underline">show archived</a>.
+    No active topics —
+    <a href="?bucket={{ bucket_filter }}&sort={{ sort_by }}&archived=1" class="text-blue-400 hover:underline">show archived</a>.
     {% endif %}
 </div>
 {% endif %}
@@ -181,8 +344,7 @@
                        placeholder="e.g. Already covered, too niche, timing off…">
             </div>
             <div class="flex gap-2 justify-end">
-                <button type="button" id="archive-cancel"
-                        class="btn btn-ghost text-xs">Cancel</button>
+                <button type="button" id="archive-cancel" class="btn btn-ghost text-xs">Cancel</button>
                 <button type="submit" class="btn btn-warning text-xs">Archive</button>
             </div>
         </form>
@@ -192,19 +354,193 @@
 
 {% block scripts %}
 <script>
+// --- Archive modal ---
 function showArchiveModal(topicId, topicText) {
     document.getElementById('archive-topic-label').textContent = topicText;
     document.getElementById('archive-form').action = `/research/topics/${topicId}/archive`;
     document.getElementById('archive-modal').classList.remove('hidden');
 }
-
 document.getElementById('archive-cancel').addEventListener('click', () => {
     document.getElementById('archive-modal').classList.add('hidden');
 });
-
-// Close modal on backdrop click
 document.getElementById('archive-modal').addEventListener('click', function(e) {
     if (e.target === this) this.classList.add('hidden');
+});
+
+// --- Single scorer ---
+const scoreInput  = document.getElementById('score-topic-input');
+const scoreBucket = document.getElementById('score-bucket-input');
+const resultPanel = document.getElementById('score-result-panel');
+
+function scoreColor(v) {
+    if (v >= 8) return '#4ade80';
+    if (v >= 6) return '#60a5fa';
+    if (v >= 4) return '#fbbf24';
+    return '#f87171';
+}
+
+async function runSingleScore(addToBank) {
+    const topic  = scoreInput.value.trim();
+    const bucket = scoreBucket.value;
+    if (!topic) { scoreInput.focus(); return; }
+
+    const btn = addToBank
+        ? document.getElementById('btn-score-and-add')
+        : document.getElementById('btn-score-topic');
+    btn.disabled = true;
+    btn.textContent = 'Scoring…';
+
+    try {
+        const payload = { topic, bucket };
+        if (addToBank) payload.add_to_bank = true;
+
+        const res  = await fetch('/api/score-topic', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify(payload),
+        });
+        const data = await res.json();
+
+        // If add-to-bank was requested, call add endpoint separately
+        if (addToBank && data.success) {
+            const form = new FormData();
+            form.append('topic',  topic);
+            form.append('bucket', bucket);
+            await fetch('/research/topics/add', { method: 'POST', body: form });
+        }
+
+        if (data.success) showScoreResult(data, topic, bucket);
+        else alert('Scoring failed: ' + (data.error || 'Unknown error'));
+    } catch(e) {
+        alert('Network error: ' + e.message);
+    } finally {
+        btn.disabled    = false;
+        btn.textContent = addToBank ? 'Score & add to bank' : 'Score it';
+    }
+}
+
+function showScoreResult(d, topic, bucket) {
+    resultPanel.classList.remove('hidden');
+    document.getElementById('sr-topic').textContent  = topic;
+    document.getElementById('sr-bucket').textContent = bucket;
+
+    const final = d.final_score ?? 0;
+    const badge = document.getElementById('sr-final-badge');
+    badge.textContent = final.toFixed(1);
+    badge.style.color = scoreColor(final);
+
+    const dims = {
+        trend:       d.score_breakdown?.trend?.score       ?? d.trend_score       ?? 0,
+        competition: d.score_breakdown?.competition?.score ?? d.competition_score ?? 0,
+        fit:         d.score_breakdown?.fit?.score         ?? d.channel_fit_score ?? 0,
+        performance: d.score_breakdown?.performance?.score ?? d.performance_score ?? 0,
+    };
+    for (const [k, v] of Object.entries(dims)) {
+        const bar = document.getElementById(`sr-bar-${k}`);
+        const val = document.getElementById(`sr-val-${k}`);
+        bar.style.width     = `${v * 10}%`;
+        bar.style.background = scoreColor(v);
+        val.textContent     = v.toFixed(1);
+    }
+
+    const hookEl = document.getElementById('sr-hook');
+    if (d.hook_suggestion) {
+        hookEl.textContent = `Hook: "${d.hook_suggestion}"`;
+        hookEl.classList.remove('hidden');
+    } else {
+        hookEl.classList.add('hidden');
+    }
+
+    const compEl    = document.getElementById('sr-comp-level');
+    const compBadge = document.getElementById('sr-comp-badge');
+    if (d.competition_level) {
+        compBadge.textContent = d.competition_level + ' competition';
+        compBadge.className   = 'badge text-xs ' + (
+            d.competition_level === 'low'    ? 'badge-green' :
+            d.competition_level === 'medium' ? 'badge-amber' : 'badge-red'
+        );
+        compEl.classList.remove('hidden');
+    } else {
+        compEl.classList.add('hidden');
+    }
+
+    const anglesWrap = document.getElementById('sr-angles-wrap');
+    const anglesList = document.getElementById('sr-angles-list');
+    const angles = d.alt_angles || [];
+    if (angles.length) {
+        anglesList.innerHTML = angles.map(a => `<li>${a}</li>`).join('');
+        anglesWrap.classList.remove('hidden');
+    } else {
+        anglesWrap.classList.add('hidden');
+    }
+}
+
+document.getElementById('btn-score-topic').addEventListener('click',   () => runSingleScore(false));
+document.getElementById('btn-score-and-add').addEventListener('click', () => runSingleScore(true));
+
+// --- Bulk scorer ---
+let bulkResults = [];
+
+document.getElementById('btn-bulk-score').addEventListener('click', async () => {
+    const raw    = document.getElementById('bulk-topics-input').value.trim();
+    const bucket = document.getElementById('bulk-bucket-input').value;
+    if (!raw) return;
+
+    const lines  = raw.split('\n').map(l => l.trim()).filter(Boolean).slice(0, 20);
+    const topics = lines.map(t => ({ topic: t, bucket }));
+
+    const btn = document.getElementById('btn-bulk-score');
+    btn.disabled    = true;
+    btn.textContent = `Scoring ${lines.length}…`;
+
+    try {
+        const res  = await fetch('/api/score-bulk', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ topics }),
+        });
+        const data = await res.json();
+        bulkResults = data.results || [];
+        renderBulkResults(bulkResults);
+    } catch(e) {
+        alert('Bulk scoring failed: ' + e.message);
+    } finally {
+        btn.disabled    = false;
+        btn.textContent = 'Score all';
+    }
+});
+
+function renderBulkResults(results) {
+    const emptyEl  = document.getElementById('bulk-results-empty');
+    const tableEl  = document.getElementById('bulk-results-table');
+    const rowsEl   = document.getElementById('bulk-rows');
+    const top5btn  = document.getElementById('btn-add-top5');
+
+    emptyEl.classList.add('hidden');
+    tableEl.classList.remove('hidden');
+    top5btn.classList.remove('hidden');
+
+    rowsEl.innerHTML = results.map((r, i) => {
+        const score = r.final_score?.toFixed(1) ?? '—';
+        const color = scoreColor(r.final_score ?? 0);
+        return `<div class="flex items-center gap-2 rounded px-2 py-1.5" style="background:#0d1526">
+            <span class="text-xs font-mono" style="color:var(--muted);width:16px">${i + 1}</span>
+            <span class="flex-1 text-xs text-slate-200 truncate">${r.topic}</span>
+            <span class="text-sm font-bold" style="color:${color}">${score}</span>
+        </div>`;
+    }).join('');
+}
+
+document.getElementById('btn-add-top5').addEventListener('click', async () => {
+    const top = bulkResults.slice(0, 5);
+    for (const r of top) {
+        const form = new FormData();
+        form.append('topic',  r.topic);
+        form.append('bucket', r.bucket || document.getElementById('bulk-bucket-input').value);
+        await fetch('/research/topics/add', { method: 'POST', body: form });
+    }
+    alert(`Added top ${top.length} topic${top.length !== 1 ? 's' : ''} to bank. Refreshing…`);
+    location.reload();
 });
 </script>
 {% endblock %}
