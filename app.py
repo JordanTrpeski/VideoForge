@@ -837,6 +837,97 @@ def api_analytics():
         return jsonify({'error': str(exc)}), 500
 
 
+@app.route('/api/analytics/score-accuracy')
+def api_score_accuracy():
+    """
+    Return score-accuracy correlation data for Phase 11.v2.E.
+
+    Compares pre-production final_score from topic_bank (or similarity_score
+    from jobs) against actual view performance. Only includes jobs that:
+      - have status='posted'
+      - have at least one analytics row
+
+    Response JSON:
+      {
+        correlation: float | null,  # Pearson r (-1 to 1)
+        data_points: int,
+        points: [{topic, score, views, bucket}],
+        summary: {high_score_avg_views, low_score_avg_views, lift_pct}
+      }
+    """
+    try:
+        from database import get_connection
+        conn = get_connection()
+        rows = conn.execute("""
+            SELECT j.topic,
+                   j.bucket,
+                   j.similarity_score,
+                   tb.final_score,
+                   COALESCE(SUM(a.views), 0) AS total_views
+            FROM jobs j
+            LEFT JOIN analytics a   ON j.id = a.job_id
+            LEFT JOIN topic_bank tb ON j.topic = tb.topic
+            WHERE j.status = 'posted'
+            GROUP BY j.id
+            HAVING total_views > 0
+            ORDER BY total_views DESC
+        """).fetchall()
+        conn.close()
+
+        points = []
+        for r in rows:
+            score = r['final_score'] if r['final_score'] is not None else r['similarity_score']
+            if score is None:
+                continue
+            points.append({
+                'topic':  r['topic'],
+                'bucket': r['bucket'],
+                'score':  float(score),
+                'views':  int(r['total_views']),
+            })
+
+        if len(points) < 2:
+            return jsonify({
+                'correlation': None,
+                'data_points': len(points),
+                'points': points,
+                'summary': {},
+                'message': 'Not enough data yet — need at least 2 posted videos with scores.',
+            })
+
+        # Pearson correlation (no numpy needed)
+        scores = [p['score'] for p in points]
+        views  = [p['views']  for p in points]
+        n  = len(scores)
+        sx = sum(scores);   sy = sum(views)
+        sx2 = sum(x*x for x in scores)
+        sy2 = sum(y*y for y in views)
+        sxy = sum(x*y for x, y in zip(scores, views))
+        denom = ((n*sx2 - sx*sx) * (n*sy2 - sy*sy)) ** 0.5
+        corr  = round((n*sxy - sx*sy) / denom, 3) if denom > 0 else None
+
+        # Simple summary: high-score (>=7) vs low-score (<7)
+        high = [p['views'] for p in points if p['score'] >= 7]
+        low  = [p['views'] for p in points if p['score'] < 7]
+        high_avg = round(sum(high) / len(high)) if high else 0
+        low_avg  = round(sum(low)  / len(low))  if low  else 0
+        lift_pct = round((high_avg - low_avg) / low_avg * 100) if low_avg > 0 else None
+
+        return jsonify({
+            'correlation': corr,
+            'data_points': len(points),
+            'points': points,
+            'summary': {
+                'high_score_avg_views': high_avg,
+                'low_score_avg_views':  low_avg,
+                'lift_pct':             lift_pct,
+            },
+        })
+    except Exception as exc:
+        logger.error(f"api_score_accuracy error: {exc}", exc_info=True)
+        return jsonify({'error': str(exc)}), 500
+
+
 @app.route('/api/test-prompt', methods=['POST'])
 def api_test_prompt():
     data        = request.get_json() or {}

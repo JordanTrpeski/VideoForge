@@ -63,7 +63,7 @@
 </div>
 
 <!-- Platform comparison -->
-<div class="card rounded-lg overflow-hidden">
+<div class="card rounded-lg overflow-hidden mb-6">
     <div class="px-5 py-3 border-b" style="border-color:var(--border)">
         <h2 class="font-semibold text-white text-sm">Platform comparison</h2>
     </div>
@@ -72,6 +72,59 @@
             Platform breakdown data is populated after the analytics engine runs (Phase 10).
             Use the YouTube Studio and TikTok analytics dashboards directly until then.
         </p>
+    </div>
+</div>
+
+<!-- Score accuracy (11.v2.E) -->
+<div class="card rounded-lg overflow-hidden">
+    <div class="px-5 py-3 border-b flex items-center justify-between" style="border-color:var(--border)">
+        <h2 class="font-semibold text-white text-sm">Score accuracy</h2>
+        <span id="sa-badge" class="badge badge-gray text-xs hidden"></span>
+    </div>
+    <div id="sa-content" class="p-5">
+        <div id="sa-loading" class="text-xs" style="color:var(--muted)">Loading…</div>
+
+        <div id="sa-main" class="hidden">
+            <!-- Correlation summary -->
+            <div class="grid grid-cols-3 gap-4 mb-5">
+                <div>
+                    <div class="text-xs mb-1" style="color:var(--muted)">Pearson r (score vs views)</div>
+                    <div id="sa-corr" class="text-2xl font-bold">—</div>
+                    <div id="sa-corr-label" class="text-xs mt-0.5" style="color:var(--muted)"></div>
+                </div>
+                <div>
+                    <div class="text-xs mb-1" style="color:var(--muted)">High-score avg views (≥7)</div>
+                    <div id="sa-high" class="text-2xl font-bold text-green-400">—</div>
+                </div>
+                <div>
+                    <div class="text-xs mb-1" style="color:var(--muted)">Low-score avg views (&lt;7)</div>
+                    <div id="sa-low" class="text-2xl font-bold text-amber-400">—</div>
+                </div>
+            </div>
+
+            <!-- Lift banner -->
+            <div id="sa-lift-wrap" class="rounded-lg px-4 py-2 mb-5 text-sm hidden"
+                 style="background:#0d1526;border:1px solid var(--border)">
+                <span id="sa-lift-text"></span>
+            </div>
+
+            <!-- Scatter points table -->
+            <div class="overflow-x-auto">
+                <table class="tbl w-full">
+                    <thead>
+                        <tr>
+                            <th class="text-left">Topic</th>
+                            <th class="text-left">Bucket</th>
+                            <th class="text-right">Score</th>
+                            <th class="text-right">Views</th>
+                        </tr>
+                    </thead>
+                    <tbody id="sa-table-body"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div id="sa-empty" class="hidden text-center py-4 text-xs" style="color:var(--muted)"></div>
     </div>
 </div>
 
@@ -166,5 +219,80 @@ function escHtml(s) {
 }
 
 loadAnalytics();
+loadScoreAccuracy();
+
+async function loadScoreAccuracy() {
+    try {
+        const res  = await fetch('/api/analytics/score-accuracy');
+        const data = await res.json();
+
+        document.getElementById('sa-loading').classList.add('hidden');
+
+        if (data.error || !data.data_points) {
+            const msg = data.message || data.error || 'No data yet.';
+            document.getElementById('sa-empty').textContent = msg;
+            document.getElementById('sa-empty').classList.remove('hidden');
+            return;
+        }
+
+        if (data.data_points < 2) {
+            document.getElementById('sa-empty').textContent =
+                data.message || 'Not enough data yet.';
+            document.getElementById('sa-empty').classList.remove('hidden');
+            return;
+        }
+
+        document.getElementById('sa-main').classList.remove('hidden');
+
+        // Badge
+        const badge = document.getElementById('sa-badge');
+        badge.textContent = `${data.data_points} videos`;
+        badge.classList.remove('hidden');
+
+        // Correlation
+        const corr    = data.correlation;
+        const corrEl  = document.getElementById('sa-corr');
+        const corrLbl = document.getElementById('sa-corr-label');
+        if (corr !== null) {
+            corrEl.textContent  = corr.toFixed(2);
+            corrEl.style.color  = corr >= 0.5 ? '#4ade80' : corr >= 0.2 ? '#fbbf24' : '#9ca3af';
+            corrLbl.textContent = corr >= 0.5 ? 'Strong positive — scoring is working'
+                                : corr >= 0.2 ? 'Moderate — scoring is directionally useful'
+                                :               'Weak — not enough data or weights need tuning';
+        } else {
+            corrEl.textContent = 'N/A';
+        }
+
+        // Summary
+        const s = data.summary || {};
+        document.getElementById('sa-high').textContent = fmtNum(s.high_score_avg_views);
+        document.getElementById('sa-low').textContent  = fmtNum(s.low_score_avg_views);
+
+        const liftWrap = document.getElementById('sa-lift-wrap');
+        const liftText = document.getElementById('sa-lift-text');
+        if (s.lift_pct !== null && s.lift_pct !== undefined) {
+            const sign = s.lift_pct >= 0 ? '+' : '';
+            liftText.innerHTML = s.lift_pct >= 0
+                ? `High-scored videos average <strong class="text-green-400">${sign}${s.lift_pct}% more views</strong> than low-scored ones.`
+                : `High-scored videos average <strong class="text-red-400">${s.lift_pct}% fewer views</strong> than low-scored ones — consider adjusting score weights.`;
+            liftWrap.classList.remove('hidden');
+        }
+
+        // Table
+        const tbody = document.getElementById('sa-table-body');
+        tbody.innerHTML = (data.points || []).map(p => {
+            const scoreColor = p.score >= 8 ? '#4ade80' : p.score >= 6 ? '#60a5fa' : p.score >= 4 ? '#fbbf24' : '#f87171';
+            return `<tr>
+                <td class="text-white text-xs">${escHtml(p.topic.substring(0,60))}${p.topic.length>60?'…':''}</td>
+                <td><span class="badge badge-gray">${p.bucket||'—'}</span></td>
+                <td class="text-right font-bold text-sm" style="color:${scoreColor}">${p.score.toFixed(1)}</td>
+                <td class="text-right text-blue-400 text-xs">${fmtNum(p.views)}</td>
+            </tr>`;
+        }).join('');
+
+    } catch(e) {
+        document.getElementById('sa-loading').textContent = 'Failed to load score accuracy data.';
+    }
+}
 </script>
 {% endblock %}
