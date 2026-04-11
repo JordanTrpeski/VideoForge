@@ -590,6 +590,60 @@ def cmd_export_topics(args) -> None:
     print()
 
 
+def cmd_mine_comments(args) -> None:
+    """
+    Trigger YouTube comment mining and print a summary.
+
+    Args:
+        args: Parsed argparse namespace (no specific fields required).
+    """
+    from database import init_db
+    from modules.comment_miner import mine_comments
+    init_db()
+    config = load_config()
+
+    print("\nMining YouTube comments for topic ideas…")
+    result = mine_comments(config)
+
+    if not result.get('success'):
+        print(f"  ERROR: {result.get('error', 'Unknown error')}")
+        return
+
+    print(f"\n  Videos scanned:   {result['videos_scanned']}")
+    print(f"  Comments pulled:  {result['comments_pulled']}")
+    print(f"  Topics added:     {result['topics_added']}")
+    if result.get('topics'):
+        print("\n  New topics:")
+        for t in result['topics']:
+            print(f"    • {t}")
+    print()
+
+
+def cmd_fill_calendar(args) -> None:
+    """
+    Auto-fill the weekly queue from the top scored topics.
+
+    Args:
+        args: Parsed argparse namespace with n attribute.
+    """
+    from database import init_db
+    from scheduler import run_auto_fill_calendar
+    init_db()
+
+    print(f"\nAuto-filling calendar with top {args.n} scored topics…")
+    result = run_auto_fill_calendar(n=args.n)
+
+    if result.get('error'):
+        print(f"  ERROR: {result['error']}")
+        return
+
+    print(f"\n  Topics queued: {result['queued']}")
+    if result.get('topics'):
+        for t in result['topics']:
+            print(f"    • {t}")
+    print()
+
+
 def cmd_score_topic(args) -> None:
     """
     Score a single topic with the research engine and print the result.
@@ -846,6 +900,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_su = subparsers.add_parser('score-unscored', help='Score all unscored topics in the bank')
     p_su.add_argument('--limit', type=int, default=20, help='Max topics to score (default 20)')
 
+    # mine-comments (11.v2.C)
+    subparsers.add_parser('mine-comments', help='Pull YouTube comments and extract topic ideas')
+
+    # fill-calendar (11.v2.D)
+    p_fill = subparsers.add_parser('fill-calendar', help='Auto-queue the top scored topics for this week')
+    p_fill.add_argument('--n', type=int, default=5, help='Number of topics to queue (default 5)')
+
     return parser
 
 
@@ -860,6 +921,8 @@ COMMAND_MAP = {
     'export-topics':       cmd_export_topics,
     'score-topic':         cmd_score_topic,
     'score-unscored':      cmd_score_unscored,
+    'mine-comments':       cmd_mine_comments,
+    'fill-calendar':       cmd_fill_calendar,
     'generate-script':     cmd_generate_script,
     'generate-voice':      cmd_generate_voice,
     'generate-images':     cmd_generate_images,

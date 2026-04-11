@@ -946,6 +946,36 @@ def api_refresh_analytics():
 
 
 # ---------------------------------------------------------------------------
+# Comment mining + calendar API endpoints (11.v2.C / 11.v2.D)
+# ---------------------------------------------------------------------------
+
+@app.route('/api/mine-comments', methods=['POST'])
+def api_mine_comments():
+    """Manually trigger YouTube comment mining."""
+    try:
+        from modules.comment_miner import mine_comments
+        config = _load_config()
+        result = mine_comments(config)
+        return jsonify(result)
+    except Exception as exc:
+        logger.error(f"api_mine_comments error: {exc}", exc_info=True)
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/auto-fill-calendar', methods=['POST'])
+def api_auto_fill_calendar():
+    """Manually trigger the auto-fill weekly calendar job."""
+    try:
+        from scheduler import run_auto_fill_calendar
+        n = int(request.get_json(silent=True).get('n', 5)) if request.get_json(silent=True) else 5
+        result = run_auto_fill_calendar(n=n)
+        return jsonify(result)
+    except Exception as exc:
+        logger.error(f"api_auto_fill_calendar error: {exc}", exc_info=True)
+        return jsonify({'error': str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Static files for output assets (video player + thumbnail preview)
 # ---------------------------------------------------------------------------
 

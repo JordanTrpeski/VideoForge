@@ -297,6 +297,127 @@ def run_analytics() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Comment mining trigger (11.v2.C)
+# ---------------------------------------------------------------------------
+
+def run_comment_mining() -> None:
+    """
+    Trigger weekly YouTube comment mining.
+    Pulls comments from posted videos, extracts topic suggestions, adds to
+    topic_bank with notes='audience-requested'.
+    Called Monday 09:00 by APScheduler.
+    """
+    logger.info("SCHEDULER: Comment mining starting")
+    try:
+        from modules.comment_miner import mine_comments
+        config = _load_config()
+        result = mine_comments(config)
+        logger.info(
+            f"SCHEDULER: Comment mining done — "
+            f"scanned {result.get('videos_scanned', 0)} videos, "
+            f"pulled {result.get('comments_pulled', 0)} comments, "
+            f"added {result.get('topics_added', 0)} topics"
+        )
+    except Exception as exc:
+        logger.error(f"SCHEDULER: Comment mining failed: {exc}", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Auto-fill weekly calendar (11.v2.D)
+# ---------------------------------------------------------------------------
+
+def run_auto_fill_calendar(n: int = 5) -> dict:
+    """
+    Select the top N scored topics from the topic_bank and queue them for
+    the week's production batch. Runs Sunday 09:00, before the 22:00 batch.
+
+    Balances across buckets — at most ceil(n/4) topics per bucket.
+    Skips topics already in the queue or already used.
+    Records the selection in the log so it appears in the dashboard.
+
+    Args:
+        n (int): Number of topics to queue (default: batch_size_per_week from config).
+
+    Returns:
+        dict: {queued: int, topics: list[str]}
+    """
+    logger.info("SCHEDULER: Auto-fill calendar starting")
+    try:
+        from database import init_db, get_topics, get_all_jobs, create_job, get_next_job_id
+        import math
+
+        init_db()
+        config = _load_config()
+        if n is None or n <= 0:
+            n = config.get('posting', {}).get('batch_size_per_week', 5)
+
+        # Topics already in the pipeline (queued, in-progress, review, etc.)
+        active_topics = {
+            j['topic'].lower().strip()
+            for j in get_all_jobs()
+            if j.get('status') not in ('posted', 'failed')
+        }
+
+        scored = [
+            t for t in get_topics()
+            if t.get('final_score') is not None
+            and t.get('status') not in ('queued', 'used', 'archived')
+            and t['topic'].lower().strip() not in active_topics
+        ]
+
+        if not scored:
+            logger.info("SCHEDULER: Auto-fill — no scored topics available")
+            return {'queued': 0, 'topics': []}
+
+        # Sort by final_score desc
+        scored.sort(key=lambda t: t.get('final_score', 0), reverse=True)
+
+        # Balance across buckets (at most ceil(n/4) per bucket)
+        per_bucket_limit = max(1, math.ceil(n / 4))
+        bucket_counts: dict[str, int] = {}
+        selected = []
+
+        for t in scored:
+            if len(selected) >= n:
+                break
+            bucket = t.get('bucket', 'elec')
+            if bucket_counts.get(bucket, 0) >= per_bucket_limit:
+                continue
+            selected.append(t)
+            bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+
+        # If we haven't filled n slots, top up without bucket balancing
+        if len(selected) < n:
+            remaining = [t for t in scored if t not in selected]
+            selected.extend(remaining[:n - len(selected)])
+
+        queued_topics = []
+        for t in selected:
+            jid = get_next_job_id()
+            create_job(
+                job_id=jid,
+                topic=t['topic'],
+                bucket=t.get('bucket') or 'elec',
+                hook_style=config.get('script', {}).get('hook_style', 'shocking_fact'),
+            )
+            queued_topics.append(t['topic'])
+            logger.info(
+                f"SCHEDULER: Auto-fill queued JOB {jid} — "
+                f"'{t['topic']}' (score={t.get('final_score', 0):.1f}, bucket={t.get('bucket')})"
+            )
+
+        logger.info(
+            f"SCHEDULER: Auto-fill calendar done — "
+            f"{len(queued_topics)} topic(s) queued for this week"
+        )
+        return {'queued': len(queued_topics), 'topics': queued_topics}
+
+    except Exception as exc:
+        logger.error(f"SCHEDULER: Auto-fill calendar failed: {exc}", exc_info=True)
+        return {'queued': 0, 'topics': [], 'error': str(exc)}
+
+
+# ---------------------------------------------------------------------------
 # Scheduler lifecycle
 # ---------------------------------------------------------------------------
 
@@ -356,6 +477,34 @@ def start_scheduler() -> BackgroundScheduler:
     )
     logger.info(f"Scheduled: weekly_analytics — Monday 06:00 {timezone}")
 
+    # Monday 09:00 — comment mining (11.v2.C)
+    _scheduler.add_job(
+        func=run_comment_mining,
+        trigger=CronTrigger(
+            day_of_week='mon', hour=9, minute=0, timezone=timezone
+        ),
+        id='weekly_comment_mining',
+        name='Weekly comment mining (Monday 09:00)',
+        replace_existing=True,
+        misfire_grace_time=3600,
+        coalesce=True,
+    )
+    logger.info(f"Scheduled: weekly_comment_mining — Monday 09:00 {timezone}")
+
+    # Sunday 09:00 — auto-fill weekly calendar (11.v2.D)
+    _scheduler.add_job(
+        func=run_auto_fill_calendar,
+        trigger=CronTrigger(
+            day_of_week='sun', hour=9, minute=0, timezone=timezone
+        ),
+        id='weekly_calendar_fill',
+        name='Weekly calendar auto-fill (Sunday 09:00)',
+        replace_existing=True,
+        misfire_grace_time=3600,
+        coalesce=True,
+    )
+    logger.info(f"Scheduled: weekly_calendar_fill — Sunday 09:00 {timezone}")
+
     _scheduler.start()
     logger.info("APScheduler started successfully")
 
@@ -405,7 +554,8 @@ def get_scheduler_status() -> dict:
 
 if __name__ == '__main__':
     print("VideoForge Scheduler — standalone mode")
-    print("Schedules: batch Sunday 22:00, analytics Monday 06:00")
+    print("Schedules: calendar-fill Sunday 09:00, batch Sunday 22:00, "
+          "analytics Monday 06:00, comment-mining Monday 09:00")
     print("Press Ctrl+C to stop.\n")
 
     scheduler = start_scheduler()
