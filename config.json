@@ -127,13 +127,13 @@
   },
   "visuals": {
     "guidance_scale": 7,
-    "height": 1920,
+    "height": 1536,
     "model": "leonardo-diffusion-xl",
     "negative_prompt": "text, watermarks, logos, faces, blurry, low quality, nsfw, people, humans, words, letters, painting, illustration, cartoon, anime, render, 3D, CGI, artificial, plastic, fake, digital art, concept art, oversaturated",
     "num_images": 1,
     "num_inference_steps": 30,
     "style_preset_id": "DYNAMIC",
-    "width": 1080
+    "width": 864
   },
   "voice": {
     "chunk_by_section": false,

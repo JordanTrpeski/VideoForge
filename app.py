@@ -44,7 +44,13 @@ from utils.logger import setup_logger
 from webhook import webhook_bp
 
 app = Flask(__name__)
-app.secret_key = os.getenv('FLASK_SECRET_KEY', 'videoforge-dev-secret-change-me')
+_flask_secret = os.getenv('FLASK_SECRET_KEY', '')
+if not _flask_secret:
+    raise RuntimeError(
+        "FLASK_SECRET_KEY is not set in .env. "
+        "Add a random string: python -c \"import secrets; print(secrets.token_hex(32))\""
+    )
+app.secret_key = _flask_secret
 
 logger = setup_logger('app')
 

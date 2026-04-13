@@ -24,6 +24,7 @@ Version: 1.0
 # 1. Standard library
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -50,25 +51,38 @@ ELEVENLABS_MODELS = {
 SECTION_ORDER = ['hook', 'body', 'cta']
 
 
-def _get_pydub():
+def _get_audio_duration(path: Path, job_id: str) -> float:
     """
-    Import pydub lazily so missing-install errors surface with a clear message.
+    Return the duration of an audio file in seconds using ffprobe.
+
+    Args:
+        path (Path):   Path to the audio file.
+        job_id (str):  Job identifier for log context.
 
     Returns:
-        module: pydub.AudioSegment class.
+        float: Duration in seconds.
 
     Raises:
-        ImportError: If pydub is not installed.
+        RuntimeError: If ffprobe is not on PATH or returns an error.
     """
     try:
-        from pydub import AudioSegment
-        return AudioSegment
-    except ImportError:
-        raise ImportError(
-            "pydub is not installed. Run: pip install pydub\n"
-            "pydub also requires ffmpeg on your PATH for MP3 operations.\n"
-            "Download ffmpeg from https://ffmpeg.org/download.html"
+        result = subprocess.run(
+            [
+                'ffprobe', '-v', 'quiet',
+                '-show_entries', 'format=duration',
+                '-of', 'csv=p=0',
+                str(path),
+            ],
+            capture_output=True, text=True, check=True
         )
+        return float(result.stdout.strip())
+    except FileNotFoundError:
+        raise RuntimeError(
+            "ffprobe not found on PATH. "
+            "ffprobe ships with ffmpeg — install ffmpeg from https://ffmpeg.org/download.html"
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"ffprobe failed for {path}: {e.stderr.strip()}")
 
 
 def _load_script(job_id: str) -> dict:
@@ -259,8 +273,8 @@ def _save_chunk(audio_bytes: bytes, output_path: Path, job_id: str, chunk_label:
 
 def _concatenate_chunks(chunk_paths: list, output_path: Path, job_id: str) -> float:
     """
-    Concatenate a list of MP3 chunk files into one output file using pydub.
-    Returns the total duration in seconds.
+    Concatenate a list of MP3 chunk files into one output file using ffmpeg.
+    Returns the total duration in seconds measured via ffprobe.
 
     Args:
         chunk_paths (list[Path]): Ordered list of chunk MP3 paths.
@@ -271,30 +285,44 @@ def _concatenate_chunks(chunk_paths: list, output_path: Path, job_id: str) -> fl
         float: Total audio duration in seconds.
 
     Raises:
-        ImportError: If pydub is not installed.
-        RuntimeError: If ffmpeg is not available (raised by pydub internally).
+        RuntimeError: If ffmpeg or ffprobe is not available or fails.
     """
-    AudioSegment = _get_pydub()
+    logger.info(f"[JOB {job_id}] Concatenating {len(chunk_paths)} audio chunks via ffmpeg")
 
-    logger.info(f"[JOB {job_id}] Concatenating {len(chunk_paths)} audio chunks")
-    combined = AudioSegment.empty()
+    if len(chunk_paths) == 1:
+        # Nothing to concatenate — just copy
+        import shutil
+        shutil.copy2(str(chunk_paths[0]), str(output_path))
+        logger.debug(f"[JOB {job_id}] Single chunk — copied directly to {output_path}")
+    else:
+        # Write a concat list file for ffmpeg
+        concat_list_path = output_path.parent / f"{output_path.stem}_concat_list.txt"
+        with open(concat_list_path, 'w', encoding='utf-8') as f:
+            for cp in chunk_paths:
+                # ffmpeg concat demuxer requires forward-slash paths in the list file
+                f.write(f"file '{cp.resolve().as_posix()}'\n")
 
-    for chunk_path in chunk_paths:
-        logger.debug(f"[JOB {job_id}] Loading chunk: {chunk_path}")
-        segment = AudioSegment.from_mp3(str(chunk_path))
-        combined += segment
+        try:
+            subprocess.run(
+                [
+                    'ffmpeg', '-y',
+                    '-f', 'concat', '-safe', '0',
+                    '-i', str(concat_list_path),
+                    '-c:a', 'libmp3lame', '-b:a', '128k',
+                    str(output_path),
+                ],
+                capture_output=True, text=True, check=True
+            )
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"ffmpeg concat failed: {e.stderr[-500:]}")
+        finally:
+            concat_list_path.unlink(missing_ok=True)
 
-    duration_seconds = len(combined) / 1000.0
-
-    combined.export(str(output_path), format='mp3', bitrate='128k')
     size_mb = output_path.stat().st_size / (1024 * 1024)
+    logger.info(f"[JOB {job_id}] File created: {output_path} ({size_mb:.3f} MB)")
 
-    logger.info(
-        f"[JOB {job_id}] File created: {output_path} ({size_mb:.3f} MB)"
-    )
-    logger.info(
-        f"[JOB {job_id}] Audio duration: {duration_seconds:.2f}s"
-    )
+    duration_seconds = _get_audio_duration(output_path, job_id)
+    logger.info(f"[JOB {job_id}] Audio duration: {duration_seconds:.2f}s")
     return duration_seconds
 
 
@@ -414,10 +442,8 @@ def generate_voice(job_id: str, config: dict) -> dict:
             final_path = output_dir / f"{job_id}.mp3"
             _save_chunk(audio_bytes, final_path, job_id, 'full')
 
-            # Measure duration
-            AudioSegment = _get_pydub()
-            segment = AudioSegment.from_mp3(str(final_path))
-            duration_seconds = len(segment) / 1000.0
+            # Measure duration via ffprobe (no pydub needed)
+            duration_seconds = _get_audio_duration(final_path, job_id)
             logger.info(f"[JOB {job_id}] Audio duration: {duration_seconds:.2f}s")
 
         # ------------------------------------------------------------------ #

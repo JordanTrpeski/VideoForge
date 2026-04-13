@@ -19,6 +19,9 @@ apscheduler>=3.10.0
 requests>=2.31.0
 
 # Audio processing
+# NOTE: pydub requires ffmpeg installed separately — it is NOT a Python package.
+# Download from https://ffmpeg.org/download.html, install it, and add the bin/
+# folder to your system PATH. Verify with: ffmpeg -version
 pydub>=0.25.1
 
 # Image processing
