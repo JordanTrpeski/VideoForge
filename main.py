@@ -449,6 +449,69 @@ def cmd_scan_trends(args) -> None:
     print()
 
 
+def cmd_scan_reddit(args) -> None:
+    """
+    Scan subreddits for top weekly text posts and store story candidates.
+
+    Skips gracefully (exit 0) when Reddit credentials are not configured, the
+    same way the voice and image engines skip without their keys.
+
+    Args:
+        args: Parsed argparse namespace with subs, min_upvotes, limit attributes.
+    """
+    from database import init_db
+    from modules.reddit_engine import scan_reddit
+
+    config = load_config()
+    init_db()
+
+    # Subs come from --subs (comma-separated) or fall back to config defaults
+    if args.subs:
+        subs = [s.strip() for s in args.subs.split(',') if s.strip()]
+    else:
+        subs = config.get('reddit', {}).get('default_subs', [])
+
+    min_upvotes = args.min_upvotes if args.min_upvotes is not None \
+        else config.get('reddit', {}).get('min_upvotes', 2000)
+    limit = args.limit if args.limit is not None \
+        else config.get('reddit', {}).get('scan_limit', 25)
+
+    if not subs:
+        print("ERROR: No subreddits given. Use --subs aita,tifu or set reddit.default_subs in config.json.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    print("\nVideoForge — Reddit story scan")
+    print("=" * 50)
+    print(f"Subreddits:  {', '.join(subs)}")
+    print(f"Min upvotes: {min_upvotes}")
+    print(f"Limit/sub:   {limit}\n")
+
+    result = scan_reddit(subs=subs, min_upvotes=min_upvotes, limit=limit)
+
+    if result.get('skipped'):
+        print(f"SKIPPED: {result['error']}")
+        print("\nSet REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET and REDDIT_USER_AGENT "
+              "in .env to enable Reddit scanning.")
+        sys.exit(0)
+
+    if not result['success']:
+        print(f"SCAN FAILED: {result.get('error', 'unknown error')}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Posts examined:    {result['examined']}")
+    print(f"Candidates added:  {result['added']}")
+
+    if result['candidates']:
+        print("\nNew candidates (approve them in the dashboard):")
+        for c in result['candidates']:
+            print(f"  [{c['upvotes']:>6} up] r/{c['subreddit']} — {c['title'][:70]}")
+    else:
+        print("\nNo new candidates (none matched the filters or all already captured).")
+
+    print()
+
+
 def cmd_list_alerts(args) -> None:
     """
     Print all active (non-expired, non-dismissed) priority alerts.
@@ -863,6 +926,19 @@ def build_parser() -> argparse.ArgumentParser:
     # scan-trends
     subparsers.add_parser('scan-trends', help='Run a Google Trends scan and create priority alerts')
 
+    # scan-reddit
+    p_reddit = subparsers.add_parser(
+        'scan-reddit',
+        help='Scan subreddits for top weekly text posts and add story candidates'
+    )
+    p_reddit.add_argument('--subs', type=str, default='',
+                          help='Comma-separated subreddits e.g. aita,tifu,relationship_advice '
+                               '(default: reddit.default_subs from config.json)')
+    p_reddit.add_argument('--min-upvotes', type=int, default=None, dest='min_upvotes',
+                          metavar='N', help='Minimum post score to accept (default: config)')
+    p_reddit.add_argument('--limit', type=int, default=None, metavar='N',
+                          help='Max posts to pull per subreddit (default: config)')
+
     # list-alerts
     subparsers.add_parser('list-alerts', help='Show all active priority alerts')
 
@@ -914,6 +990,7 @@ COMMAND_MAP = {
     'test-connections':    cmd_test_connections,
     'batch':               cmd_batch,
     'scan-trends':         cmd_scan_trends,
+    'scan-reddit':         cmd_scan_reddit,
     'list-alerts':         cmd_list_alerts,
     'fast-track':          cmd_fast_track,
     'add-topic':           cmd_add_topic,

@@ -452,6 +452,18 @@ def generate_images(job_id: str, config: dict) -> dict:
     logger.info(f"[JOB {job_id}] Starting image_engine")
 
     # ------------------------------------------------------------------ #
+    # Guard: background-loop visual mode skips image generation entirely  #
+    # (zero Leonardo.AI calls — visuals come from a background clip in     #
+    # assembly_engine). Used by Reddit Stories and any clip-based content. #
+    # ------------------------------------------------------------------ #
+    visual_mode = config.get('pipeline', {}).get('visual_mode', 'images')
+    if visual_mode == 'background_loop':
+        msg = "visual_mode is 'background_loop' — skipping image generation (no Leonardo.AI calls)."
+        logger.info(f"[JOB {job_id}] {msg}")
+        update_job_status(job_id, 'assembling')
+        return {'success': True, 'skipped': True, 'images_dir': None, 'count': 0, 'error': msg}
+
+    # ------------------------------------------------------------------ #
     # Guard: Leonardo.AI API key must be present                          #
     # ------------------------------------------------------------------ #
     api_key = os.getenv('LEONARDO_API_KEY', '').strip()

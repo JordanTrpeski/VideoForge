@@ -163,8 +163,14 @@ def _set_stage(stage: str, status: str, message: str = '') -> None:
 
 
 def _run_pipeline_thread(job_id: str, config: dict,
-                         start_from: str = 'generate-script') -> None:
-    """Run the full pipeline for job_id in a background thread."""
+                         start_from: str = 'generate-script',
+                         stop_after: str = None) -> None:
+    """Run the full pipeline for job_id in a background thread.
+
+    If stop_after is set to a stage name, the thread runs through that stage and
+    then stops (used by Reddit jobs to pause at the script gate for hook
+    selection before voice generation).
+    """
     with _pipeline_lock:
         _pipeline_state['running'] = True
         _pipeline_state['job_id'] = job_id
@@ -225,6 +231,11 @@ def _run_pipeline_thread(job_id: str, config: dict,
                     _pipeline_state['error'] = result.get('error', 'unknown error')
                     _pipeline_state['running'] = False
                 return
+
+            # Stop early when requested (e.g. Reddit jobs pause at the script gate)
+            if stop_after and stage == stop_after:
+                logger.info(f"[JOB {job_id}] Pipeline thread stopping after '{stage}' (gate)")
+                break
 
         with _pipeline_lock:
             _pipeline_state['running'] = False
@@ -443,9 +454,10 @@ def _clear_from_stage(job_id: str, from_stage: str) -> None:
 def _status_color(status: str) -> str:
     mapping = {
         'queued': 'gray', 'scripting': 'blue', 'voiced': 'blue',
-        'imaging': 'blue', 'assembling': 'blue', 'captioning': 'blue',
-        'metadata': 'blue', 'review': 'amber', 'uploading': 'purple',
-        'posted': 'green', 'failed': 'red',
+        'script_done': 'amber', 'imaging': 'blue', 'assembling': 'blue',
+        'captioning': 'blue', 'metadata': 'blue', 'review': 'amber',
+        'uploading': 'purple', 'posted': 'green', 'failed': 'red',
+        'candidate': 'gray', 'archived': 'gray',
     }
     return mapping.get(status, 'gray')
 
@@ -737,6 +749,77 @@ def save_script_edit(job_id):
     ).start()
 
     flash(f'Job {job_id} — script saved, pipeline restarting from voice.', 'success')
+    return redirect(url_for('job_detail', job_id=job_id))
+
+
+@app.route('/jobs/<job_id>/use-hook', methods=['POST'])
+def use_hook(job_id):
+    """
+    Reddit hook gate: write the selected opening hook into the script JSON,
+    then continue the pipeline from voice generation.
+
+    Form params:
+        hook_index — index into the script's "hooks" array (preferred), or
+        hook_text  — explicit hook text fallback.
+    """
+    import json as _json
+
+    job = get_job(job_id)
+    if not job:
+        flash('Job not found.', 'error')
+        return redirect(url_for('jobs_list'))
+
+    script_path = job.get('script_path') or f'output/scripts/{job_id}.json'
+    try:
+        with open(script_path, 'r', encoding='utf-8') as f:
+            script_data = _json.load(f)
+    except Exception as exc:
+        flash(f'Could not read script file: {exc}', 'error')
+        return redirect(url_for('job_detail', job_id=job_id))
+
+    hooks = script_data.get('hooks', []) or []
+    chosen = (request.form.get('hook_text') or '').strip()
+    idx_raw = request.form.get('hook_index', '')
+    if not chosen and idx_raw.isdigit():
+        idx = int(idx_raw)
+        if 0 <= idx < len(hooks):
+            chosen = str(hooks[idx]).strip()
+
+    if not chosen:
+        flash('No hook selected.', 'error')
+        return redirect(url_for('job_detail', job_id=job_id))
+
+    # Replace the hook section and rebuild narration so voice picks up the change
+    sections = script_data.setdefault('sections', {})
+    sections['hook'] = chosen
+    body = sections.get('body', '')
+    cta  = sections.get('cta', 'Follow for part two and more stories like this.')
+    narration = ' '.join(p for p in (chosen, body, cta) if p).strip()
+    script_data['narration'] = narration
+    word_count = len(narration.split())
+    script_data['word_count'] = word_count
+    script_data['estimated_duration_seconds'] = round(word_count / 2.5)
+    script_data['selected_hook'] = chosen
+
+    try:
+        with open(script_path, 'w', encoding='utf-8') as f:
+            _json.dump(script_data, f, indent=2, ensure_ascii=False)
+    except Exception as exc:
+        flash(f'Could not write script file: {exc}', 'error')
+        return redirect(url_for('job_detail', job_id=job_id))
+
+    update_job_field(job_id, 'word_count', word_count)
+    update_job_status(job_id, 'queued', error_module=None, error_message=None)
+
+    config = _load_config()
+    threading.Thread(
+        target=_run_pipeline_thread,
+        args=(job_id, config, 'generate-voice'),
+        daemon=True,
+    ).start()
+
+    logger.info(f"[JOB {job_id}] Hook selected — continuing pipeline from voice")
+    flash(f'Hook selected — job {job_id} continuing through voice, assembly and captions.', 'success')
     return redirect(url_for('job_detail', job_id=job_id))
 
 
@@ -1438,12 +1521,18 @@ def fast_track_alert(alert_id):
 
 @app.route('/research/topics')
 def research_topics():
-    from database import get_topics
+    from database import get_topics, get_reddit_candidates
     show_archived = request.args.get('archived', '0') == '1'
     bucket_filter = request.args.get('bucket', '')
     sort_by       = request.args.get('sort', 'added_at')   # added_at | final_score | status
 
-    topics = get_topics(include_archived=show_archived)
+    # Reddit story candidates awaiting approval — shown in their own section
+    reddit_candidates = get_reddit_candidates(include_all=False)
+
+    # Scored/manual topics table excludes Reddit-sourced rows (those live in
+    # their own candidates section above).
+    topics = [t for t in get_topics(include_archived=show_archived)
+              if t.get('source') != 'reddit']
 
     # alt_angles is stored as a JSON string in the DB — parse it into a list here
     # so templates can iterate directly without filter gymnastics.
@@ -1472,6 +1561,7 @@ def research_topics():
         'topics.html',
         active='topics',
         topics=topics,
+        reddit_candidates=reddit_candidates,
         show_archived=show_archived,
         bucket_filter=bucket_filter,
         sort_by=sort_by,
@@ -1535,6 +1625,50 @@ def research_topics_queue(topic_id):
     )
     flash(f'Job {jid} added to queue from topic bank.', 'success')
     return redirect(url_for('research_topics'))
+
+
+@app.route('/research/topics/<int:topic_id>/approve-reddit', methods=['POST'])
+def approve_reddit_candidate(topic_id):
+    """
+    Approve a Reddit story candidate: create a reddit-mode job and run the
+    script (rewrite) stage immediately, stopping at the hook-selection gate.
+
+    Reddit candidates only enter the pipeline here — nothing happens to them
+    until the owner clicks Approve.
+    """
+    from database import get_topic, update_topic_status
+    t = get_topic(topic_id)
+    if not t:
+        flash('Candidate not found.', 'error')
+        return redirect(url_for('research_topics'))
+    if t.get('source') != 'reddit':
+        flash('That topic is not a Reddit candidate.', 'error')
+        return redirect(url_for('research_topics'))
+
+    jid = get_next_job_id()
+    create_job(
+        job_id=jid,
+        topic=t['topic'],
+        bucket='reddit',
+        hook_style='reddit_story',
+        mode='reddit',
+        source='reddit',
+        source_selftext=t.get('selftext') or '',
+    )
+    update_topic_status(topic_id, 'queued')
+    logger.info(f"[JOB {jid}] Created from Reddit candidate {topic_id} — running script stage")
+
+    config = _load_config()
+    threading.Thread(
+        target=_run_pipeline_thread,
+        args=(jid, config, 'generate-script'),
+        kwargs={'stop_after': 'generate-script'},
+        daemon=True,
+    ).start()
+
+    flash(f'Reddit story approved — job {jid} is generating its script. '
+          f'Pick a hook when it finishes.', 'success')
+    return redirect(url_for('job_detail', job_id=jid))
 
 
 # ---------------------------------------------------------------------------

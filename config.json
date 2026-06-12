@@ -38,6 +38,18 @@
     "prompt_file": "prompts/metadata_prompt.txt",
     "youtube_description_max_chars": 500
   },
+  "pipeline": {
+    "visual_mode": "images"
+  },
+  "reddit": {
+    "default_subs": [
+      "tifu",
+      "AmItheAsshole",
+      "relationship_advice"
+    ],
+    "min_upvotes": 2000,
+    "scan_limit": 25
+  },
   "posting": {
     "auto_post_after_review": false,
     "batch_size_per_week": 5,
@@ -106,6 +118,7 @@
     "max_tokens": 4096,
     "model": "claude-sonnet-4-6",
     "prompt_file": "prompts/script_prompt.txt",
+    "reddit_prompt_file": "prompts/reddit_rewrite_prompt.txt",
     "temperature": 0.7,
     "word_count_target": 175
   },

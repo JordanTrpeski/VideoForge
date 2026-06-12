@@ -165,6 +165,16 @@ def run_pipeline_sync(job_id: str, config: dict) -> bool:
 
         if result.get('success'):
             logger.info(f"[JOB {job_id}] Stage {stage} DONE in {elapsed}s")
+            # Reddit-mode jobs pause at the hook-selection gate after the script
+            # stage — the owner picks a hook in the dashboard before voice runs.
+            if stage == 'generate-script':
+                job = get_job(job_id)
+                if job and job.get('mode') == 'reddit':
+                    logger.info(
+                        f"[JOB {job_id}] Reddit job — stopping at hook-selection gate "
+                        "(status: script_done)"
+                    )
+                    return True
         else:
             err = result.get('error', 'unknown error')
             logger.error(f"[JOB {job_id}] Stage {stage} FAILED in {elapsed}s — {err}")

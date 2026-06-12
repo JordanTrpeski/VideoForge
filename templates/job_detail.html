@@ -28,6 +28,30 @@
     {% endif %}
 </div>
 
+<!-- Reddit hook-selection gate -->
+{% if job.status == 'script_done' and script_data and script_data.hooks %}
+<div class="card rounded-lg p-5 mb-5" style="border-left:3px solid var(--amber, #f59e0b)">
+    <h2 class="font-semibold text-white text-sm mb-1">Pick an opening hook</h2>
+    <p class="text-xs mb-4" style="color:var(--muted)">
+        This Reddit story has been rewritten. Choose the opening line, then the
+        pipeline continues through voice, assembly and captions.
+    </p>
+    <form method="post" action="/jobs/{{ job.id }}/use-hook">
+        <div class="space-y-2 mb-4">
+            {% for hook in script_data.hooks %}
+            <label class="flex items-start gap-2 p-2 rounded cursor-pointer hover:bg-slate-800/50"
+                   style="border:1px solid var(--border)">
+                <input type="radio" name="hook_index" value="{{ loop.index0 }}"
+                       class="mt-0.5" {% if loop.first %}checked{% endif %}>
+                <span class="text-slate-200 text-xs leading-relaxed">{{ hook }}</span>
+            </label>
+            {% endfor %}
+        </div>
+        <button type="submit" class="btn btn-success text-sm">Use this hook &amp; continue</button>
+    </form>
+</div>
+{% endif %}
+
 <!-- Review gate (full panel) -->
 {% if job.status == 'review' %}
 <div class="card rounded-lg p-5 mb-5">

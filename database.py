@@ -191,27 +191,38 @@ def create_job(
     job_id: str,
     topic: str,
     bucket: Optional[str] = None,
-    hook_style: Optional[str] = None
+    hook_style: Optional[str] = None,
+    mode: str = 'standard',
+    source: str = 'manual',
+    source_selftext: Optional[str] = None,
 ) -> None:
     """
     Insert a new job row with status='queued'.
 
     Args:
-        job_id (str):     Unique identifier e.g. '001'.
-        topic (str):      Video topic string.
-        bucket (str):     Content bucket: elec / infra / vehicle / flaw.
-        hook_style (str): Hook style: shocking_fact / wrong_assumption / nobody_talks.
+        job_id (str):          Unique identifier e.g. '001'.
+        topic (str):           Video topic string.
+        bucket (str):          Content bucket: elec / infra / vehicle / flaw.
+        hook_style (str):      Hook style: shocking_fact / wrong_assumption / nobody_talks.
+        mode (str):            Content mode: 'standard' (engineering) or 'reddit' (story).
+        source (str):          Provenance: 'manual' / 'reddit' / 'topic_bank' etc.
+        source_selftext (str): Raw source story text the script engine rewrites
+                               (Reddit mode only — None for standard jobs).
 
     Returns:
         None
     """
-    logger.info(f"[JOB {job_id}] Creating job — topic: '{topic}', bucket: {bucket}, hook: {hook_style}")
+    logger.info(
+        f"[JOB {job_id}] Creating job — topic: '{topic}', bucket: {bucket}, "
+        f"hook: {hook_style}, mode: {mode}, source: {source}"
+    )
     conn = get_connection()
     try:
         conn.execute(
-            """INSERT INTO jobs (id, topic, bucket, hook_style, status)
-               VALUES (?, ?, ?, ?, 'queued')""",
-            (job_id, topic, bucket, hook_style)
+            """INSERT INTO jobs (id, topic, bucket, hook_style, status,
+                                 mode, source, source_selftext)
+               VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)""",
+            (job_id, topic, bucket, hook_style, mode, source, source_selftext)
         )
         conn.commit()
         logger.info(f"[JOB {job_id}] Job created successfully")
@@ -271,7 +282,8 @@ def update_job_field(job_id: str, field: str, value) -> None:
         'script_path', 'audio_path', 'images_dir', 'raw_video_path',
         'final_video_path', 'thumbnail_path', 'metadata_path',
         'tiktok_url', 'youtube_url', 'tiktok_video_id', 'youtube_video_id',
-        'duration_seconds', 'word_count', 'bucket', 'hook_style'
+        'duration_seconds', 'word_count', 'bucket', 'hook_style',
+        'mode', 'source', 'source_selftext', 'review_note',
     }
     if field not in allowed_fields:
         raise ValueError(f"Field '{field}' is not an allowed job column")
@@ -418,6 +430,18 @@ def _run_migrations() -> None:
         "ALTER TABLE priority_alerts ADD COLUMN why_relevant TEXT",
         "ALTER TABLE priority_alerts ADD COLUMN angle_options TEXT",
         "ALTER TABLE priority_alerts ADD COLUMN urgency TEXT DEFAULT 'medium'",
+        # Reddit Stories — topic_bank provenance + raw story payload
+        "ALTER TABLE topic_bank ADD COLUMN source TEXT DEFAULT 'manual'",
+        "ALTER TABLE topic_bank ADD COLUMN reddit_id TEXT",
+        "ALTER TABLE topic_bank ADD COLUMN selftext TEXT",
+        "ALTER TABLE topic_bank ADD COLUMN upvotes INTEGER",
+        "ALTER TABLE topic_bank ADD COLUMN num_comments INTEGER",
+        "ALTER TABLE topic_bank ADD COLUMN permalink TEXT",
+        # Reddit Stories — jobs carry content mode + the source story text so
+        # the script engine can rewrite it. mode: 'standard' | 'reddit'
+        "ALTER TABLE jobs ADD COLUMN mode TEXT DEFAULT 'standard'",
+        "ALTER TABLE jobs ADD COLUMN source TEXT DEFAULT 'manual'",
+        "ALTER TABLE jobs ADD COLUMN source_selftext TEXT",
     ]
     conn = get_connection()
     try:
@@ -774,6 +798,143 @@ def delete_topic(topic_id: int) -> None:
     try:
         conn.execute("DELETE FROM topic_bank WHERE id = ?", (topic_id,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_topic(topic_id: int) -> Optional[dict]:
+    """
+    Fetch a single topic_bank row by ID.
+
+    Args:
+        topic_id (int): Topic primary key.
+
+    Returns:
+        dict | None: Topic row as a dictionary, or None if not found.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM topic_bank WHERE id = ?", (topic_id,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def update_topic_status(topic_id: int, status: str) -> None:
+    """
+    Update only the status field of a topic_bank row.
+
+    Args:
+        topic_id (int): Topic primary key.
+        status (str):   New status e.g. 'candidate' / 'queued' / 'used'.
+    """
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE topic_bank SET status = ?, updated_at = datetime('now') WHERE id = ?",
+            (status, topic_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Reddit Stories helpers
+# ---------------------------------------------------------------------------
+
+def insert_reddit_candidate(
+    reddit_id: str,
+    title: str,
+    selftext: str,
+    upvotes: int,
+    num_comments: int,
+    permalink: str,
+    bucket: str = 'reddit',
+) -> int:
+    """
+    Insert a Reddit post into topic_bank as a story candidate awaiting approval.
+
+    The row is created with source='reddit' and status='candidate' so it stays
+    out of the normal scored-topic flow until the owner approves it.
+
+    Args:
+        reddit_id (str):    Reddit post ID (e.g. '1abc2de') — used for dedupe.
+        title (str):        Post title — becomes the topic text.
+        selftext (str):     Full self-post body the script engine will rewrite.
+        upvotes (int):      Post score at scan time.
+        num_comments (int): Comment count at scan time.
+        permalink (str):    Reddit permalink path.
+        bucket (str):       Content bucket label (default 'reddit').
+
+    Returns:
+        int: Rowid of the inserted candidate.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            """INSERT INTO topic_bank
+                   (topic, bucket, status, source, reddit_id, selftext,
+                    upvotes, num_comments, permalink)
+               VALUES (?, ?, 'candidate', 'reddit', ?, ?, ?, ?, ?)""",
+            (title, bucket, reddit_id, selftext, upvotes, num_comments, permalink),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_existing_reddit_ids() -> set:
+    """
+    Return the set of Reddit post IDs already stored in topic_bank.
+
+    Used by the Reddit scanner to skip posts that were captured on a prior run.
+
+    Returns:
+        set[str]: Reddit post IDs already present.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT reddit_id FROM topic_bank WHERE reddit_id IS NOT NULL"
+        ).fetchall()
+        return {r['reddit_id'] for r in rows if r['reddit_id']}
+    finally:
+        conn.close()
+
+
+def get_reddit_candidates(include_all: bool = False, limit: int = 200) -> list:
+    """
+    Fetch Reddit-sourced topics.
+
+    Args:
+        include_all (bool): If False, only status='candidate' rows (awaiting
+                            approval). If True, all reddit-sourced rows.
+        limit (int):        Maximum rows to return.
+
+    Returns:
+        list[dict]: Reddit topic rows, newest first.
+    """
+    conn = get_connection()
+    try:
+        if include_all:
+            rows = conn.execute(
+                """SELECT * FROM topic_bank
+                   WHERE source = 'reddit' AND archived = 0
+                   ORDER BY added_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT * FROM topic_bank
+                   WHERE source = 'reddit' AND status = 'candidate' AND archived = 0
+                   ORDER BY upvotes DESC, added_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 

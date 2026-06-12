@@ -31,6 +31,7 @@ Version: 1.0
 import json
 import math
 import os
+import random
 import time
 import wave
 import struct
@@ -239,6 +240,52 @@ def _find_music_file(job_id: str) -> Path | None:
     return mp3_files[0]
 
 
+# Background video extensions searched in assets/backgrounds/ (order-independent)
+_BACKGROUND_EXTENSIONS = ('*.mp4', '*.mov', '*.mkv', '*.webm')
+
+
+def _resolve_background_clip(job_id: str) -> Path | None:
+    """
+    Return a random background video clip from assets/backgrounds/, or None if
+    the directory is missing or empty.
+
+    Used by background_loop visual mode (e.g. Reddit Stories) where the video is
+    a looping gameplay/ambient clip instead of an image slideshow.
+
+    Args:
+        job_id (str): Job identifier for log context.
+
+    Returns:
+        Path | None: Path to a randomly chosen background clip, or None.
+    """
+    bg_dir = Path('assets/backgrounds')
+    if not bg_dir.exists():
+        logger.warning(
+            f"[JOB {job_id}] assets/backgrounds/ not found — "
+            "cannot use background_loop visual mode"
+        )
+        return None
+
+    clips: list[Path] = []
+    for pattern in _BACKGROUND_EXTENSIONS:
+        clips.extend(bg_dir.glob(pattern))
+    clips = sorted(set(clips))
+
+    if not clips:
+        logger.warning(
+            f"[JOB {job_id}] No video files in assets/backgrounds/ — "
+            "cannot use background_loop visual mode"
+        )
+        return None
+
+    chosen = random.choice(clips)
+    logger.info(
+        f"[JOB {job_id}] Background clip: {chosen.name} "
+        f"(chosen at random from {len(clips)} clip(s))"
+    )
+    return chosen
+
+
 # ---------------------------------------------------------------------------
 # Video assembly
 # ---------------------------------------------------------------------------
@@ -340,8 +387,42 @@ def _build_video(
     )
 
     # ------------------------------------------------------------------
-    # 4. Mix audio
+    # 4. Mix audio (voice + optional background music)
     # ------------------------------------------------------------------
+    video = _mix_audio(video, voice_clip, audio_duration, music_path, config, job_id)
+    return video
+
+
+def _mix_audio(
+    video,
+    voice_clip,
+    audio_duration: float,
+    music_path: Path | None,
+    config: dict,
+    job_id: str,
+):
+    """
+    Attach voice (and optional looped/trimmed background music) to a video clip.
+
+    Shared by the image-slideshow path and the background-loop path so both use
+    identical music mixing at the configured dB level.
+
+    Args:
+        video:                  MoviePy VideoClip to attach audio to.
+        voice_clip:             Loaded voice AudioFileClip.
+        audio_duration (float): Target audio length in seconds.
+        music_path (Path|None): Background music file, or None.
+        config (dict):          Loaded config.json.
+        job_id (str):           Job identifier for log context.
+
+    Returns:
+        moviepy.VideoClip: The video with mixed audio attached.
+    """
+    from moviepy import AudioFileClip, CompositeAudioClip
+    from moviepy.audio.fx import AudioLoop, MultiplyVolume
+
+    music_volume_db = config['video']['music_volume_db']
+
     if music_path:
         music_linear = _db_to_linear(music_volume_db)
         logger.info(
@@ -363,8 +444,100 @@ def _build_video(
         mixed_audio = voice_clip
         logger.info(f"[JOB {job_id}] Audio: voice only (no music track found)")
 
-    video = video.with_audio(mixed_audio)
-    return video
+    return video.with_audio(mixed_audio)
+
+
+def _build_background_video(
+    background_path: Path,
+    audio_path: Path,
+    music_path: Path | None,
+    config: dict,
+    job_id: str,
+):
+    """
+    Assemble a video from a looping background clip instead of an image slideshow.
+
+    Steps:
+      1. Load voice audio → determine total duration
+      2. Load the background clip, drop its own audio
+      3. Pick a random start offset; trim if longer than the audio, loop if shorter
+      4. Scale-to-cover and centre-crop to the configured portrait resolution
+      5. Mix voice + background music (identical to the slideshow path)
+
+    Args:
+        background_path (Path): Background video clip from assets/backgrounds/.
+        audio_path (Path):      Voice audio file (MP3 or WAV).
+        music_path (Path|None): Background music file, or None.
+        config (dict):          Loaded config.json.
+        job_id (str):           Job identifier for log context.
+
+    Returns:
+        moviepy.VideoClip: Assembled clip ready for write_videofile.
+    """
+    from moviepy import AudioFileClip, VideoFileClip
+    from moviepy.video.fx import Loop
+
+    vid_cfg = config['video']
+    fps = vid_cfg['fps']
+    target_w = vid_cfg['width']
+    target_h = vid_cfg['height']
+
+    # ------------------------------------------------------------------
+    # 1. Load voice audio and measure duration
+    # ------------------------------------------------------------------
+    logger.info(f"[JOB {job_id}] Loading audio: {audio_path}")
+    voice_clip = AudioFileClip(str(audio_path))
+    audio_duration = voice_clip.duration
+    logger.info(f"[JOB {job_id}] Audio duration: {audio_duration:.2f}s")
+
+    # ------------------------------------------------------------------
+    # 2. Load background clip and drop its own audio track
+    # ------------------------------------------------------------------
+    logger.info(f"[JOB {job_id}] Loading background clip: {background_path.name}")
+    bg = VideoFileClip(str(background_path)).without_audio()
+    logger.info(
+        f"[JOB {job_id}] Background clip: {bg.w}x{bg.h}, "
+        f"duration {bg.duration:.1f}s"
+    )
+
+    # ------------------------------------------------------------------
+    # 3. Trim (random offset) if long enough, otherwise loop to length
+    # ------------------------------------------------------------------
+    if bg.duration >= audio_duration:
+        max_start = bg.duration - audio_duration
+        start = random.uniform(0, max_start) if max_start > 0 else 0
+        bg = bg.subclipped(start, start + audio_duration)
+        logger.info(
+            f"[JOB {job_id}] Trimmed background to {audio_duration:.2f}s "
+            f"from random offset {start:.1f}s"
+        )
+    else:
+        bg = bg.with_effects([Loop(duration=audio_duration)])
+        logger.info(
+            f"[JOB {job_id}] Background ({bg.duration:.1f}s) shorter than audio — "
+            f"looped to {audio_duration:.2f}s"
+        )
+
+    # ------------------------------------------------------------------
+    # 4. Scale-to-cover then centre-crop to portrait resolution
+    # ------------------------------------------------------------------
+    scale = max(target_w / bg.w, target_h / bg.h)
+    bg = bg.resized(scale)
+    bg = bg.cropped(
+        width=target_w, height=target_h,
+        x_center=bg.w / 2, y_center=bg.h / 2,
+    )
+    bg = bg.with_fps(fps)
+    bg = bg.with_duration(audio_duration)
+    logger.info(
+        f"[JOB {job_id}] Background framed to {target_w}x{target_h} @ {fps}fps, "
+        f"duration {bg.duration:.2f}s"
+    )
+
+    # ------------------------------------------------------------------
+    # 5. Mix audio (voice + optional music)
+    # ------------------------------------------------------------------
+    return _mix_audio(bg, voice_clip, audio_duration, music_path, config, job_id)
 
 
 # ---------------------------------------------------------------------------
@@ -420,26 +593,51 @@ def assemble_video(job_id: str, config: dict) -> dict:
         # Resolve inputs — create placeholders if upstream stages skipped
         # ----------------------------------------------------------------
         audio_path = _resolve_audio(job_id, script, config)
-        image_paths = _resolve_images(job_id, config)
         music_path = _find_music_file(job_id)
 
-        logger.info(
-            f"[JOB {job_id}] Inputs ready — "
-            f"audio: {audio_path.name}, "
-            f"images: {len(image_paths)}, "
-            f"music: {music_path.name if music_path else 'none'}"
-        )
+        # Decide visual source: background-loop clip vs image slideshow
+        visual_mode = config.get('pipeline', {}).get('visual_mode', 'images')
+        background_path = None
+        if visual_mode == 'background_loop':
+            background_path = _resolve_background_clip(job_id)
+            if background_path is None:
+                logger.warning(
+                    f"[JOB {job_id}] background_loop mode but no clip available — "
+                    "falling back to image slideshow"
+                )
 
         # ----------------------------------------------------------------
         # Build video
         # ----------------------------------------------------------------
-        video = _build_video(
-            image_paths=image_paths,
-            audio_path=audio_path,
-            music_path=music_path,
-            config=config,
-            job_id=job_id
-        )
+        if background_path is not None:
+            logger.info(
+                f"[JOB {job_id}] Inputs ready — "
+                f"audio: {audio_path.name}, "
+                f"background: {background_path.name}, "
+                f"music: {music_path.name if music_path else 'none'}"
+            )
+            video = _build_background_video(
+                background_path=background_path,
+                audio_path=audio_path,
+                music_path=music_path,
+                config=config,
+                job_id=job_id,
+            )
+        else:
+            image_paths = _resolve_images(job_id, config)
+            logger.info(
+                f"[JOB {job_id}] Inputs ready — "
+                f"audio: {audio_path.name}, "
+                f"images: {len(image_paths)}, "
+                f"music: {music_path.name if music_path else 'none'}"
+            )
+            video = _build_video(
+                image_paths=image_paths,
+                audio_path=audio_path,
+                music_path=music_path,
+                config=config,
+                job_id=job_id
+            )
 
         # ----------------------------------------------------------------
         # Export

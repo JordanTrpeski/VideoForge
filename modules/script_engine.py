@@ -36,6 +36,9 @@ logger = setup_logger('script_engine')
 
 # Required keys that must be present in Claude's JSON response
 REQUIRED_SCRIPT_KEYS = {'topic', 'bucket', 'hook_style', 'sections', 'narration', 'visual_brief', 'word_count'}
+# Reddit Stories use a background-loop visual, so no visual_brief is needed —
+# instead Claude returns 5 candidate opening hooks for the owner to pick from.
+REQUIRED_REDDIT_KEYS = {'topic', 'bucket', 'hook_style', 'sections', 'narration', 'hooks', 'word_count'}
 REQUIRED_SECTION_KEYS = {'hook', 'body', 'cta'}
 
 
@@ -94,7 +97,40 @@ def _build_prompt(template: str, topic: str, bucket: str, hook_style: str, confi
     return result
 
 
-def _parse_script_response(raw_text: str, job_id: str) -> dict:
+def _build_reddit_prompt(template: str, title: str, selftext: str, config: dict) -> str:
+    """
+    Inject the Reddit story and word-count targets into the rewrite template.
+
+    Args:
+        template (str): Raw reddit_rewrite_prompt.txt with {placeholder} vars.
+        title (str):    Original Reddit post title.
+        selftext (str): Original Reddit post body to be rewritten.
+        config (dict):  Loaded config.json contents.
+
+    Returns:
+        str: Fully rendered prompt ready to send to Claude.
+    """
+    word_count_target = config['script']['word_count_target']
+    target_length = config['channel']['target_length_seconds']
+
+    variables = {
+        'title': title,
+        'selftext': selftext,
+        'word_count_target': word_count_target,
+        'word_count_min': int(word_count_target * 0.92),
+        'word_count_max': int(word_count_target * 1.08),
+        'target_length_seconds': target_length,
+    }
+
+    # Explicit str.replace() so JSON literal braces in the template are never
+    # misinterpreted as Python format() placeholders.
+    result = template
+    for key, value in variables.items():
+        result = result.replace('{' + key + '}', str(value))
+    return result
+
+
+def _parse_script_response(raw_text: str, job_id: str, mode: str = 'standard') -> dict:
     """
     Parse and validate the JSON returned by Claude.
 
@@ -194,8 +230,9 @@ def _parse_script_response(raw_text: str, job_id: str) -> dict:
             raise ValueError(f"Claude returned invalid JSON (truncated, not salvageable): {e}")
         data = salvaged
 
-    # Validate top-level keys
-    missing = REQUIRED_SCRIPT_KEYS - set(data.keys())
+    # Validate top-level keys (mode-specific requirements)
+    required_keys = REQUIRED_REDDIT_KEYS if mode == 'reddit' else REQUIRED_SCRIPT_KEYS
+    missing = required_keys - set(data.keys())
     if missing:
         raise ValueError(f"Script JSON missing required keys: {missing}")
 
@@ -205,11 +242,19 @@ def _parse_script_response(raw_text: str, job_id: str) -> dict:
     if missing_sections:
         raise ValueError(f"Script JSON sections missing keys: {missing_sections}")
 
-    # Validate visual_brief length
-    expected_images = 8
-    actual_images = len(data.get('visual_brief', []))
-    if actual_images != expected_images:
-        raise ValueError(f"Expected {expected_images} visual_brief prompts, got {actual_images}")
+    if mode == 'reddit':
+        # Reddit stories: require 5 candidate hooks; no image prompts needed
+        # (visuals come from a background loop). Normalise visual_brief to [].
+        hooks = data.get('hooks', [])
+        if not isinstance(hooks, list) or len(hooks) < 1:
+            raise ValueError(f"Reddit script JSON must contain a non-empty 'hooks' array, got: {hooks}")
+        data.setdefault('visual_brief', [])
+    else:
+        # Validate visual_brief length for standard engineering scripts
+        expected_images = 8
+        actual_images = len(data.get('visual_brief', []))
+        if actual_images != expected_images:
+            raise ValueError(f"Expected {expected_images} visual_brief prompts, got {actual_images}")
 
     return data
 
@@ -297,16 +342,36 @@ def _call_claude_with_retry(
     raise Exception(f"Claude API call failed after {max_retries} attempts")
 
 
-def generate_script(job_id: str, topic: str, config: dict, bucket: str = 'elec', hook_style: str = None) -> dict:
+def generate_script(
+    job_id: str,
+    topic: str,
+    config: dict,
+    bucket: str = 'elec',
+    hook_style: str = None,
+    mode: str = None,
+) -> dict:
     """
     Generate a structured video script using the Claude API.
 
+    Two modes:
+      - 'standard' (default): the engineering explainer flow — loads
+        prompts/script_prompt.txt and produces narration + 8 image prompts.
+        On success, advances the job to 'voiced' so voice generation runs.
+      - 'reddit': the story rewrite flow — loads prompts/reddit_rewrite_prompt.txt,
+        injects the job's stored source story (jobs.source_selftext), and
+        produces narration + 5 candidate hooks. On success, advances the job to
+        'script_done' (a manual gate) so the owner can pick a hook in the
+        dashboard before voice generation runs.
+
+    If mode is None it is read from the job's `mode` column (default 'standard').
+
     Args:
         job_id (str):      Unique job identifier e.g. '001'.
-        topic (str):       Video topic e.g. 'Why phone chargers get warm'.
+        topic (str):       Video topic / story title.
         config (dict):     Loaded config.json contents.
-        bucket (str):      Content bucket: elec / infra / vehicle / flaw.
+        bucket (str):      Content bucket: elec / infra / vehicle / flaw / reddit.
         hook_style (str):  Hook style override. Defaults to config value if None.
+        mode (str):        'standard' or 'reddit'. None → read from job record.
 
     Returns:
         dict: {
@@ -321,26 +386,46 @@ def generate_script(job_id: str, topic: str, config: dict, bucket: str = 'elec',
     if not topic or not topic.strip():
         raise ValueError("Topic cannot be empty")
 
+    # Resolve mode (and source story for reddit) from the job record if needed
+    job = get_job(job_id)
+    if mode is None:
+        mode = (job or {}).get('mode') or 'standard'
+
     if hook_style is None:
-        hook_style = config['script']['hook_style']
+        hook_style = 'reddit_story' if mode == 'reddit' else config['script']['hook_style']
 
     stage_start = time.time()
-    logger.info(f"[JOB {job_id}] Starting script_engine for topic: '{topic}'")
+    logger.info(f"[JOB {job_id}] Starting script_engine (mode={mode}) for topic: '{topic}'")
     logger.debug(
         f"[JOB {job_id}] Config: model={config['script']['model']}, "
         f"temperature={config['script']['temperature']}, "
         f"word_count={config['script']['word_count_target']}, "
-        f"bucket={bucket}, hook_style={hook_style}"
+        f"bucket={bucket}, hook_style={hook_style}, mode={mode}"
     )
 
     update_job_status(job_id, 'scripting')
 
     try:
-        # Load and render prompt
-        prompt_file = config['script']['prompt_file']
-        logger.debug(f"[JOB {job_id}] Loading prompt template: {prompt_file}")
-        template = _load_prompt_template(prompt_file)
-        prompt = _build_prompt(template, topic, bucket, hook_style, config)
+        # Load and render the prompt for this mode
+        if mode == 'reddit':
+            prompt_file = config['script'].get('reddit_prompt_file', 'prompts/reddit_rewrite_prompt.txt')
+            selftext = (job or {}).get('source_selftext') or ''
+            if not selftext.strip():
+                raise ValueError(
+                    "Reddit-mode job has no source_selftext to rewrite. "
+                    "Was this job created by approving a Reddit candidate?"
+                )
+            logger.debug(
+                f"[JOB {job_id}] Loading reddit prompt: {prompt_file} "
+                f"({len(selftext)} chars of source story)"
+            )
+            template = _load_prompt_template(prompt_file)
+            prompt = _build_reddit_prompt(template, topic, selftext, config)
+        else:
+            prompt_file = config['script']['prompt_file']
+            logger.debug(f"[JOB {job_id}] Loading prompt template: {prompt_file}")
+            template = _load_prompt_template(prompt_file)
+            prompt = _build_prompt(template, topic, bucket, hook_style, config)
 
         # Initialise Claude client
         api_key = os.getenv('ANTHROPIC_API_KEY')
@@ -363,17 +448,23 @@ def generate_script(job_id: str, topic: str, config: dict, bucket: str = 'elec',
         )
 
         # Parse and validate response
-        script_data = _parse_script_response(raw_response, job_id)
+        script_data = _parse_script_response(raw_response, job_id, mode=mode)
 
         word_count = script_data['word_count']
-        visual_count = len(script_data['visual_brief'])
-        logger.info(
-            f"[JOB {job_id}] Script parsed — "
-            f"word_count: {word_count}, visual_prompts: {visual_count}"
-        )
+        if mode == 'reddit':
+            logger.info(
+                f"[JOB {job_id}] Reddit script parsed — "
+                f"word_count: {word_count}, hooks: {len(script_data.get('hooks', []))}"
+            )
+        else:
+            logger.info(
+                f"[JOB {job_id}] Script parsed — "
+                f"word_count: {word_count}, visual_prompts: {len(script_data['visual_brief'])}"
+            )
 
         # Enrich with pipeline metadata
         script_data['job_id'] = job_id
+        script_data['mode'] = mode
         script_data['generated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         if 'estimated_duration_seconds' not in script_data:
             script_data['estimated_duration_seconds'] = round(word_count / 2.5)
@@ -392,7 +483,13 @@ def generate_script(job_id: str, topic: str, config: dict, bucket: str = 'elec',
         # Update database
         update_job_field(job_id, 'script_path', str(output_path))
         update_job_field(job_id, 'word_count', word_count)
-        update_job_status(job_id, 'voiced')  # next stage is voice_engine
+
+        # Reddit jobs stop at a manual hook-selection gate; standard jobs flow on.
+        if mode == 'reddit':
+            update_job_status(job_id, 'script_done')
+            logger.info(f"[JOB {job_id}] Reddit script ready — awaiting hook selection (status: script_done)")
+        else:
+            update_job_status(job_id, 'voiced')  # next stage is voice_engine
 
         elapsed = time.time() - stage_start
         logger.info(f"[JOB {job_id}] script_engine COMPLETED in {elapsed:.1f}s")

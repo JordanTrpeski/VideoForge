@@ -39,6 +39,47 @@
 {% endif %}
 {% endwith %}
 
+<!-- Reddit story candidates -->
+{% if reddit_candidates %}
+<div class="card rounded-xl p-5 mb-5" style="border-left:3px solid #f59e0b">
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="font-semibold text-white text-sm">
+            Reddit story candidates
+            <span class="badge badge-gray ml-2">{{ reddit_candidates|length }}</span>
+        </h2>
+        <span class="text-xs" style="color:var(--muted)">Approve to rewrite into a script</span>
+    </div>
+    <div class="space-y-2">
+        {% for c in reddit_candidates %}
+        <div class="flex items-start justify-between gap-3 p-3 rounded"
+             style="background:#0d1526;border:1px solid var(--border)">
+            <div class="min-w-0">
+                <p class="text-slate-200 text-xs font-medium leading-snug">{{ c.topic }}</p>
+                <div class="flex flex-wrap gap-3 mt-1 text-xs" style="color:var(--muted)">
+                    <span>&#9650; {{ c.upvotes or 0 }}</span>
+                    <span>&#128172; {{ c.num_comments or 0 }}</span>
+                    <span>{{ (c.selftext or '')|length }} chars</span>
+                    {% if c.permalink %}
+                    <a href="{{ c.permalink }}" target="_blank" rel="noopener"
+                       class="text-blue-400 hover:underline">view on reddit &rarr;</a>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="flex items-center gap-1 flex-shrink-0">
+                <form method="post" action="/research/topics/{{ c.id }}/approve-reddit">
+                    <button type="submit" class="btn btn-success text-xs">Approve</button>
+                </form>
+                <form method="post" action="/research/topics/{{ c.id }}/archive">
+                    <input type="hidden" name="reason" value="reddit candidate dismissed">
+                    <button type="submit" class="btn btn-ghost text-xs" style="color:var(--muted)">Dismiss</button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
 <!-- Single scorer -->
 <div class="card rounded-xl p-5 mb-5">
     <h2 class="font-semibold text-white text-sm mb-4">Score a topic</h2>
