@@ -48,3 +48,9 @@ pytrends>=4.9.0
 
 # Reddit Stories — Reddit API wrapper (text-post story mining)
 praw>=7.7.0
+
+# TTS providers (optional — install only for the provider you use)
+# voice.provider = 'openai'  → pip install openai
+openai>=1.0.0
+# voice.provider = 'kokoro'  → pip install kokoro soundfile
+# kokoro and soundfile are not pinned here — install manually if needed

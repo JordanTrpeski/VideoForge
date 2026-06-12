@@ -148,12 +148,37 @@
     "style_preset_id": "DYNAMIC",
     "width": 864
   },
+  "variation": {
+    "shorts": {
+      "length_targets_seconds": [55, 70, 85],
+      "hook_styles": [
+        "shocking_fact",
+        "wrong_assumption",
+        "nobody_talks_about_this",
+        "counterintuitive",
+        "hidden_mechanism"
+      ]
+    },
+    "reddit_long_form": {
+      "length_targets_seconds": [480, 600, 720],
+      "hook_styles": [
+        "shocking_revelation",
+        "relatable_mistake",
+        "unexpected_twist",
+        "dramatic_opening",
+        "moral_dilemma"
+      ]
+    }
+  },
   "voice": {
+    "provider": "elevenlabs",
     "chunk_by_section": false,
     "output_format": "mp3_44100_128",
     "similarity_boost": 0.8,
     "stability": 0.65,
     "style_exaggeration": 0.2,
-    "voice_id": "SET_IN_ENV"
+    "voice_id": "SET_IN_ENV",
+    "openai_voice": "alloy",
+    "kokoro_voice": "af_heart"
   }
 }

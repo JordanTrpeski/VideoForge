@@ -19,6 +19,7 @@ Version: 1.0
 # 1. Standard library
 import json
 import os
+import random
 import time
 from datetime import datetime
 from pathlib import Path
@@ -28,7 +29,7 @@ import anthropic
 from dotenv import load_dotenv
 
 # 3. Local modules
-from database import create_job, update_job_status, update_job_field, get_job, get_next_job_id
+from database import create_job, update_job_status, update_job_field, get_job, get_next_job_id, get_last_job_variation
 from utils.logger import setup_logger
 
 load_dotenv()
@@ -61,30 +62,43 @@ def _load_prompt_template(prompt_file: str) -> str:
     return path.read_text(encoding='utf-8')
 
 
-def _build_prompt(template: str, topic: str, bucket: str, hook_style: str, config: dict) -> str:
+def _build_prompt(
+    template: str,
+    topic: str,
+    bucket: str,
+    hook_style: str,
+    config: dict,
+    target_length_override: int = None,
+) -> str:
     """
     Inject runtime values into the prompt template.
 
     Args:
-        template (str):   Raw prompt template with {placeholder} variables.
-        topic (str):      Video topic.
-        bucket (str):     Content bucket identifier.
-        hook_style (str): Hook style name.
-        config (dict):    Loaded config.json contents.
+        template (str):             Raw prompt template with {placeholder} variables.
+        topic (str):                Video topic.
+        bucket (str):               Content bucket identifier.
+        hook_style (str):           Hook style name.
+        config (dict):              Loaded config.json contents.
+        target_length_override (int): Variation-picked length in seconds; overrides
+                                      config['channel']['target_length_seconds'] when set.
 
     Returns:
         str: Fully rendered prompt ready to send to Claude.
     """
-    word_count_target = config['script']['word_count_target']
-    target_length = config['channel']['target_length_seconds']
+    if target_length_override is not None:
+        target_length = target_length_override
+        word_count_target = round(target_length * 2.5)
+    else:
+        target_length = config['channel']['target_length_seconds']
+        word_count_target = config['script']['word_count_target']
 
     variables = {
         'topic': topic,
         'bucket': bucket,
         'hook_style': hook_style,
         'word_count_target': word_count_target,
-        'word_count_min': int(word_count_target * 0.92),
-        'word_count_max': int(word_count_target * 1.08),
+        'word_count_min': round(word_count_target * 0.92),
+        'word_count_max': round(word_count_target * 1.08),
         'target_length_seconds': target_length,
         'images_to_generate': config['script']['images_to_generate'],
     }
@@ -97,28 +111,40 @@ def _build_prompt(template: str, topic: str, bucket: str, hook_style: str, confi
     return result
 
 
-def _build_reddit_prompt(template: str, title: str, selftext: str, config: dict) -> str:
+def _build_reddit_prompt(
+    template: str,
+    title: str,
+    selftext: str,
+    config: dict,
+    target_length_override: int = None,
+) -> str:
     """
     Inject the Reddit story and word-count targets into the rewrite template.
 
     Args:
-        template (str): Raw reddit_rewrite_prompt.txt with {placeholder} vars.
-        title (str):    Original Reddit post title.
-        selftext (str): Original Reddit post body to be rewritten.
-        config (dict):  Loaded config.json contents.
+        template (str):             Raw reddit_rewrite_prompt.txt with {placeholder} vars.
+        title (str):                Original Reddit post title.
+        selftext (str):             Original Reddit post body to be rewritten.
+        config (dict):              Loaded config.json contents.
+        target_length_override (int): Variation-picked length in seconds; overrides
+                                      config['channel']['target_length_seconds'] when set.
 
     Returns:
         str: Fully rendered prompt ready to send to Claude.
     """
-    word_count_target = config['script']['word_count_target']
-    target_length = config['channel']['target_length_seconds']
+    if target_length_override is not None:
+        target_length = target_length_override
+        word_count_target = round(target_length * 2.5)
+    else:
+        target_length = config['channel']['target_length_seconds']
+        word_count_target = config['script']['word_count_target']
 
     variables = {
         'title': title,
         'selftext': selftext,
         'word_count_target': word_count_target,
-        'word_count_min': int(word_count_target * 0.92),
-        'word_count_max': int(word_count_target * 1.08),
+        'word_count_min': round(word_count_target * 0.92),
+        'word_count_max': round(word_count_target * 1.08),
         'target_length_seconds': target_length,
     }
 
@@ -342,6 +368,48 @@ def _call_claude_with_retry(
     raise Exception(f"Claude API call failed after {max_retries} attempts")
 
 
+def _pick_variation(mode: str, config: dict, job_id: str) -> tuple:
+    """
+    Randomly select a target length and hook style for this job from the
+    variation config, enforcing the no-consecutive-identical-pair rule.
+
+    Reads config fresh on every call (hot-reload safe — config is passed in).
+
+    Args:
+        mode (str):    'standard' or 'reddit' — selects the variation sub-block.
+        config (dict): Loaded config.json contents.
+        job_id (str):  Current job ID (excluded when fetching the previous pair).
+
+    Returns:
+        tuple: (picked_length_seconds: int, picked_hook_style: str)
+    """
+    var_key = 'reddit_long_form' if mode == 'reddit' else 'shorts'
+    var_cfg = config['variation'][var_key]
+    lengths: list = var_cfg['length_targets_seconds']
+    hooks: list = var_cfg['hook_styles']
+
+    last_length, last_hook = get_last_job_variation(exclude_job_id=job_id)
+
+    # Try up to 10 times to avoid the exact previous pair.
+    # With 3 lengths × 5 hooks = 15 combinations the chance of exhausting
+    # all retries is negligible, but we cap to avoid an infinite loop when
+    # the lists have only one entry each.
+    picked_length = random.choice(lengths)
+    picked_hook = random.choice(hooks)
+    for _ in range(10):
+        if (picked_length, picked_hook) != (last_length, last_hook):
+            break
+        picked_length = random.choice(lengths)
+        picked_hook = random.choice(hooks)
+
+    logger.info(
+        f"[JOB {job_id}] Variation — mode: {var_key}, "
+        f"length: {picked_length}s, hook: {picked_hook} "
+        f"(previous: {last_length}s / {last_hook})"
+    )
+    return picked_length, picked_hook
+
+
 def generate_script(
     job_id: str,
     topic: str,
@@ -406,6 +474,18 @@ def generate_script(
     update_job_status(job_id, 'scripting')
 
     try:
+        # ------------------------------------------------------------------ #
+        # Variation pick — choose length and hook style for this job          #
+        # ------------------------------------------------------------------ #
+        picked_length = None
+        picked_hook = hook_style
+        if config.get('variation'):
+            picked_length, picked_hook = _pick_variation(mode, config, job_id)
+            update_job_field(job_id, 'picked_length_seconds', picked_length)
+            update_job_field(job_id, 'picked_hook_style', picked_hook)
+            # Use the variation-picked hook as the effective hook for this run
+            hook_style = picked_hook
+
         # Load and render the prompt for this mode
         if mode == 'reddit':
             prompt_file = config['script'].get('reddit_prompt_file', 'prompts/reddit_rewrite_prompt.txt')
@@ -420,12 +500,14 @@ def generate_script(
                 f"({len(selftext)} chars of source story)"
             )
             template = _load_prompt_template(prompt_file)
-            prompt = _build_reddit_prompt(template, topic, selftext, config)
+            prompt = _build_reddit_prompt(template, topic, selftext, config,
+                                          target_length_override=picked_length)
         else:
             prompt_file = config['script']['prompt_file']
             logger.debug(f"[JOB {job_id}] Loading prompt template: {prompt_file}")
             template = _load_prompt_template(prompt_file)
-            prompt = _build_prompt(template, topic, bucket, hook_style, config)
+            prompt = _build_prompt(template, topic, bucket, hook_style, config,
+                                   target_length_override=picked_length)
 
         # Initialise Claude client
         api_key = os.getenv('ANTHROPIC_API_KEY')

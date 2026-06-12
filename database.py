@@ -121,6 +121,8 @@ def init_db() -> None:
                 similarity_checked  INTEGER DEFAULT 0,
                 similar_to_job      TEXT,
                 similarity_score    REAL,
+                picked_length_seconds INTEGER,
+                picked_hook_style   TEXT,
                 created_at          TEXT DEFAULT (datetime('now')),
                 updated_at          TEXT DEFAULT (datetime('now'))
             );
@@ -284,6 +286,7 @@ def update_job_field(job_id: str, field: str, value) -> None:
         'tiktok_url', 'youtube_url', 'tiktok_video_id', 'youtube_video_id',
         'duration_seconds', 'word_count', 'bucket', 'hook_style',
         'mode', 'source', 'source_selftext', 'review_note',
+        'picked_length_seconds', 'picked_hook_style',
     }
     if field not in allowed_fields:
         raise ValueError(f"Field '{field}' is not an allowed job column")
@@ -314,6 +317,40 @@ def get_job(job_id: str) -> Optional[dict]:
     try:
         row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_last_job_variation(exclude_job_id: Optional[str] = None) -> tuple:
+    """
+    Return (picked_length_seconds, picked_hook_style) from the most recently
+    created job that has both variation fields set.  Used by the variation
+    picker to enforce the no-consecutive-identical-pair rule.
+
+    Args:
+        exclude_job_id (str): Exclude this job ID (the current job being created).
+
+    Returns:
+        tuple: (int|None, str|None) — (length_seconds, hook_style).
+    """
+    conn = get_connection()
+    try:
+        if exclude_job_id:
+            row = conn.execute(
+                """SELECT picked_length_seconds, picked_hook_style FROM jobs
+                   WHERE id != ? AND picked_length_seconds IS NOT NULL
+                   ORDER BY created_at DESC LIMIT 1""",
+                (exclude_job_id,)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """SELECT picked_length_seconds, picked_hook_style FROM jobs
+                   WHERE picked_length_seconds IS NOT NULL
+                   ORDER BY created_at DESC LIMIT 1"""
+            ).fetchone()
+        if row:
+            return (row['picked_length_seconds'], row['picked_hook_style'])
+        return (None, None)
     finally:
         conn.close()
 
@@ -442,6 +479,9 @@ def _run_migrations() -> None:
         "ALTER TABLE jobs ADD COLUMN mode TEXT DEFAULT 'standard'",
         "ALTER TABLE jobs ADD COLUMN source TEXT DEFAULT 'manual'",
         "ALTER TABLE jobs ADD COLUMN source_selftext TEXT",
+        # Variation system — per-job randomly chosen length and hook style
+        "ALTER TABLE jobs ADD COLUMN picked_length_seconds INTEGER",
+        "ALTER TABLE jobs ADD COLUMN picked_hook_style TEXT",
     ]
     conn = get_connection()
     try:
