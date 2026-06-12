@@ -37,7 +37,11 @@
         pipeline continues through voice, assembly and captions.
     </p>
     <form method="post" action="/jobs/{{ job.id }}/use-hook">
-        <div class="space-y-2 mb-4">
+        <!-- Long-form hook selection -->
+        <p class="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wider">
+            Long video hook
+        </p>
+        <div class="space-y-2 mb-5">
             {% for hook in script_data.hooks %}
             <label class="flex items-start gap-2 p-2 rounded cursor-pointer hover:bg-slate-800/50"
                    style="border:1px solid var(--border)">
@@ -47,7 +51,40 @@
             </label>
             {% endfor %}
         </div>
-        <button type="submit" class="btn btn-success text-sm">Use this hook &amp; continue</button>
+
+        <!-- Teaser hook selection (only shown when linked teaser is at script_done) -->
+        {% if linked_job and linked_job.story_role == 'short' and linked_job.status == 'script_done' and linked_script_data and linked_script_data.hooks %}
+        <div class="pt-4 mb-5" style="border-top:1px solid var(--border)">
+            <p class="text-xs font-semibold text-slate-400 mb-1 uppercase tracking-wider">
+                Teaser hook
+                <span class="text-slate-600 font-normal ml-1 normal-case">
+                    Job {{ linked_job.id }} — {{ linked_job.topic }}
+                </span>
+            </p>
+            <p class="text-xs mb-3" style="color:var(--muted)">
+                This teaser will be published as a linked Short ≥ 24 hours after the long video.
+            </p>
+            <div class="space-y-2">
+                {% for hook in linked_script_data.hooks %}
+                <label class="flex items-start gap-2 p-2 rounded cursor-pointer hover:bg-slate-800/50"
+                       style="border:1px solid var(--border)">
+                    <input type="radio" name="teaser_hook_index" value="{{ loop.index0 }}"
+                           class="mt-0.5" {% if loop.first %}checked{% endif %}>
+                    <span class="text-slate-200 text-xs leading-relaxed">{{ hook }}</span>
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+        {% elif linked_job and linked_job.story_role == 'short' %}
+        <div class="pt-4 mb-4 text-xs" style="border-top:1px solid var(--border);color:var(--muted)">
+            Teaser (Job {{ linked_job.id }}) — status:
+            <span class="badge badge-{{ linked_job.status == 'failed' and 'red' or 'gray' }}">
+                {{ linked_job.status }}
+            </span>
+        </div>
+        {% endif %}
+
+        <button type="submit" class="btn btn-success text-sm">Use these hooks &amp; continue</button>
     </form>
 </div>
 {% endif %}
@@ -55,7 +92,27 @@
 <!-- Review gate (full panel) -->
 {% if job.status == 'review' %}
 <div class="card rounded-lg p-5 mb-5">
-    <h2 class="font-semibold text-white text-sm mb-4">Review gate</h2>
+    <h2 class="font-semibold text-white text-sm mb-1">Review gate</h2>
+
+    <!-- Story-pair badge -->
+    {% if job.story_role == 'long' and linked_job %}
+    <div class="mb-4 flex items-center gap-2">
+        <span class="badge badge-blue text-xs">Story pair</span>
+        <span class="text-xs" style="color:var(--muted)">
+            Linked teaser: Job {{ linked_job.id }} —
+            <span class="badge badge-{{ 'green' if linked_job.status == 'review' else 'gray' }} text-xs">
+                {{ linked_job.status }}
+            </span>
+            {% if linked_job.status == 'review' %}
+            — Approving will upload this video now and schedule the teaser ≥ 24 h later.
+            {% elif linked_job.status in ('scheduled_upload', 'uploading', 'posted') %}
+            — Teaser already in upload queue.
+            {% else %}
+            — Teaser still processing; it will be scheduled automatically once ready.
+            {% endif %}
+        </span>
+    </div>
+    {% endif %}
 
     <!-- Notes field — value synced to every form before submit -->
     <div class="mb-4">
@@ -67,10 +124,63 @@
                   placeholder="e.g. voice sounded rushed, images don't match, hook too weak…">{{ job.review_note or '' }}</textarea>
     </div>
 
+    <!-- Thumbnail variant picker (text_template mode — 2 variants) -->
+    {% if thumbnail_variants | length > 1 %}
+    <div class="mb-5">
+        <p class="text-xs text-slate-400 mb-2 font-medium">Choose thumbnail variant</p>
+        <div class="flex gap-4 flex-wrap">
+            {% for v in thumbnail_variants %}
+            <div id="thumb-card-{{ v.index }}"
+                 class="rounded-lg overflow-hidden cursor-pointer border-2 transition-all"
+                 style="width:200px; border-color: {% if chosen_variant == v.index %}var(--accent-blue){% else %}var(--border){% endif %}"
+                 onclick="selectVariant({{ v.index }})">
+                <img src="{{ v.url }}" alt="Variant {{ v.index }}"
+                     style="width:200px; height:113px; object-fit:cover; display:block">
+                <p class="text-xs text-center py-1"
+                   style="color:{% if chosen_variant == v.index %}var(--accent-blue){% else %}var(--muted){% endif %}">
+                    Variant {{ v.index }}{% if chosen_variant == v.index %} ✓{% endif %}
+                </p>
+            </div>
+            {% endfor %}
+        </div>
+        <p id="variant-saved-msg" class="text-xs mt-1" style="color:var(--muted); display:none">Variant saved.</p>
+    </div>
+    {% endif %}
+
+    <!-- AI disclosure checklist (only when YouTube rejected containsSyntheticMedia) -->
+    {% if job.disclosure_checklist_required %}
+    <div class="mb-5 p-4 rounded-lg" style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3)">
+        <p class="text-xs font-semibold text-red-400 mb-2">
+            &#9888; AI disclosure required in YouTube Studio
+        </p>
+        <p class="text-xs text-slate-400 mb-3">
+            YouTube did not accept the automated "Contains synthetic/AI content" flag for this upload.
+            You must set it manually before this job can be marked posted.
+        </p>
+        <ol class="text-xs text-slate-400 space-y-1 list-decimal ml-4 mb-3">
+            <li>Open <strong class="text-white">YouTube Studio</strong> → Content</li>
+            <li>Click the video → Details → "Show more"</li>
+            <li>Check <strong class="text-white">"Altered or synthetic content"</strong></li>
+            <li>Save</li>
+        </ol>
+        <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" id="disclosure-check" class="w-4 h-4" required>
+            <span class="text-xs text-slate-300">I have set the AI content disclosure in YouTube Studio</span>
+        </label>
+    </div>
+    {% endif %}
+
     <!-- Approve -->
-    <form action="/jobs/{{ job.id }}/approve" method="post" class="review-action mb-5">
+    <form action="/jobs/{{ job.id }}/approve" method="post" class="review-action mb-5" id="approve-form">
         <input type="hidden" name="note" class="note-field">
-        <button class="btn btn-success text-sm">&#10003; Approve &amp; upload</button>
+        {% if job.disclosure_checklist_required %}
+        <input type="hidden" name="disclosure_acknowledged" id="disclosure-ack-input" value="">
+        {% endif %}
+        {% if job.story_role == 'long' and linked_job and linked_job.status == 'review' %}
+        <button class="btn btn-success text-sm" id="approve-btn">&#10003; Approve &amp; upload (schedules teaser in 24 h)</button>
+        {% else %}
+        <button class="btn btn-success text-sm" id="approve-btn">&#10003; Approve &amp; upload</button>
+        {% endif %}
     </form>
 
     <!-- Rejection options -->
@@ -135,6 +245,56 @@
             </form>
         </div>
     </div>
+
+    <!-- Paired teaser preview (only when linked short is at review) -->
+    {% if linked_job and linked_job.story_role == 'short' and linked_job.status == 'review' %}
+    <div class="mt-5 pt-5" style="border-top:1px solid var(--border)">
+        <div class="flex items-center gap-2 mb-3">
+            <span class="text-xs font-semibold text-white uppercase tracking-wider">Teaser Short</span>
+            <span class="badge badge-blue text-xs">Job {{ linked_job.id }}</span>
+            <span class="text-xs" style="color:var(--muted)">
+                ~{{ linked_job.word_count or '—' }} words ·
+                {{ linked_job.topic }}
+            </span>
+        </div>
+
+        <div class="grid gap-5" style="grid-template-columns: {% if linked_video_url %}1fr 1fr{% else %}1fr{% endif %}">
+            <!-- Teaser video player -->
+            {% if linked_video_url %}
+            <div>
+                <video controls class="w-full rounded-lg" style="max-height:420px;background:#000"
+                       src="{{ linked_video_url }}">
+                    Your browser does not support video playback.
+                </video>
+            </div>
+            {% endif %}
+
+            <!-- Teaser script preview -->
+            {% if linked_script_data %}
+            <div class="text-xs space-y-3">
+                {% if linked_script_data.sections %}
+                <div>
+                    <p class="uppercase tracking-wider mb-1" style="color:var(--muted)">Hook</p>
+                    <p class="text-slate-300 leading-relaxed">{{ linked_script_data.sections.hook or '—' }}</p>
+                </div>
+                <div>
+                    <p class="uppercase tracking-wider mb-1" style="color:var(--muted)">Script</p>
+                    <p class="text-slate-400 leading-relaxed">{{ (linked_script_data.narration or '')[:300] }}{% if (linked_script_data.narration or '')|length > 300 %}&hellip;{% endif %}</p>
+                </div>
+                {% else %}
+                <p class="text-slate-400 leading-relaxed">{{ (linked_script_data.narration or '')[:300] }}{% if (linked_script_data.narration or '')|length > 300 %}&hellip;{% endif %}</p>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+
+        {% if not linked_video_url %}
+        <p class="text-xs mt-2" style="color:var(--muted)">
+            Teaser video not rendered yet — check job status.
+        </p>
+        {% endif %}
+    </div>
+    {% endif %}
 </div>
 
 <!-- Script editor — hidden until toggled -->
@@ -278,7 +438,21 @@
     <!-- Thumbnail -->
     <div class="card rounded-lg p-5">
         <h2 class="font-semibold text-white text-sm mb-3">Thumbnail</h2>
-        {% if thumbnail_url %}
+        {% if thumbnail_variants | length > 1 %}
+        <!-- text_template mode — show both variants side by side -->
+        <div class="flex gap-3 flex-wrap">
+            {% for v in thumbnail_variants %}
+            <div class="text-center">
+                <img src="{{ v.url }}" alt="Variant {{ v.index }}"
+                     class="rounded" style="width:180px; height:101px; object-fit:cover; display:block;
+                     border:2px solid {% if chosen_variant == v.index %}var(--accent-blue){% else %}var(--border){% endif %}">
+                <p class="text-xs mt-1" style="color:{% if chosen_variant == v.index %}var(--accent-blue){% else %}var(--muted){% endif %}">
+                    Variant {{ v.index }}{% if chosen_variant == v.index %} (selected){% endif %}
+                </p>
+            </div>
+            {% endfor %}
+        </div>
+        {% elif thumbnail_url %}
         <img src="{{ thumbnail_url }}" alt="Thumbnail"
              class="rounded w-full max-w-xs mx-auto" style="max-height:320px; object-fit:cover">
         {% else %}
@@ -340,5 +514,54 @@ document.querySelectorAll('.review-action').forEach(function(form) {
         if (hidden) hidden.value = noteVal;
     });
 });
+
+// Thumbnail variant picker
+let _currentVariant = {{ chosen_variant | default(1) }};
+
+function selectVariant(v) {
+    // Update card borders + labels
+    document.querySelectorAll('[id^="thumb-card-"]').forEach(function(card) {
+        const idx = parseInt(card.id.replace('thumb-card-', ''));
+        card.style.borderColor = (idx === v) ? 'var(--accent-blue)' : 'var(--border)';
+        const lbl = card.querySelector('p');
+        if (lbl) {
+            lbl.style.color = (idx === v) ? 'var(--accent-blue)' : 'var(--muted)';
+            lbl.textContent  = 'Variant ' + idx + (idx === v ? ' ✓' : '');
+        }
+    });
+    _currentVariant = v;
+    // Persist to server immediately
+    fetch('/jobs/{{ job.id }}/set-thumbnail-variant', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ variant: v }),
+    }).then(function() {
+        const msg = document.getElementById('variant-saved-msg');
+        if (msg) { msg.style.display = 'block'; setTimeout(function() { msg.style.display = 'none'; }, 2000); }
+    });
+}
+
+// Disclosure checklist gate
+(function() {
+    const disclosureCheck = document.getElementById('disclosure-check');
+    const approveForm     = document.getElementById('approve-form');
+    const ackInput        = document.getElementById('disclosure-ack-input');
+
+    if (!disclosureCheck || !approveForm) return;
+
+    approveForm.addEventListener('submit', function(e) {
+        if (!disclosureCheck.checked) {
+            e.preventDefault();
+            disclosureCheck.style.outline = '2px solid #ef4444';
+            disclosureCheck.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            return false;
+        }
+        if (ackInput) ackInput.value = '1';
+    });
+
+    disclosureCheck.addEventListener('change', function() {
+        disclosureCheck.style.outline = '';
+    });
+})();
 </script>
 {% endblock %}

@@ -32,22 +32,30 @@ load_dotenv()
 sys.path.insert(0, str(Path(__file__).parent))
 
 
-def load_config() -> dict:
+def load_config(channel_slug: str = None) -> dict:
     """
-    Load config.json from the project root.
+    Load the fully-merged config for the given channel (or the default channel).
+
+    Falls back to raw config.json if the config_loader is unavailable.
+
+    Args:
+        channel_slug (str): Channel identifier. Uses default_channel from
+                            config.json when None.
 
     Returns:
-        dict: Parsed configuration dictionary.
-
-    Raises:
-        FileNotFoundError: If config.json does not exist.
+        dict: Merged configuration dictionary.
     """
-    config_path = Path('config.json')
-    if not config_path.exists():
-        print("ERROR: config.json not found. Run from the VideoForge project root.", file=sys.stderr)
-        sys.exit(1)
-    with open(config_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    try:
+        from utils.config_loader import load_channel_config, get_default_channel
+        slug = channel_slug or get_default_channel()
+        return load_channel_config(slug)
+    except Exception:
+        config_path = Path('config.json')
+        if not config_path.exists():
+            print("ERROR: config.json not found. Run from the VideoForge project root.", file=sys.stderr)
+            sys.exit(1)
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
 
 
 # ---------------------------------------------------------------------------
@@ -64,14 +72,17 @@ def cmd_generate_script(args) -> None:
     from database import init_db, create_job, get_next_job_id
     from modules.script_engine import generate_script
 
-    config = load_config()
+    channel = getattr(args, 'channel', None)
+    config = load_config(channel_slug=channel)
     init_db()
 
     job_id = get_next_job_id()
     bucket = args.bucket or 'elec'
     hook_style = args.hook or config['script']['hook_style']
+    channel_id = channel or config.get('default_channel', 'engineering_brief')
 
-    create_job(job_id=job_id, topic=args.topic, bucket=bucket, hook_style=hook_style)
+    create_job(job_id=job_id, topic=args.topic, bucket=bucket, hook_style=hook_style,
+               channel_id=channel_id)
 
     print(f"\nJob {job_id} created — topic: '{args.topic}'")
     print(f"Bucket: {bucket} | Hook: {hook_style}\n")
@@ -381,11 +392,14 @@ def cmd_batch(args) -> None:
 
     init_db()
     count = args.count
+    channel = getattr(args, 'channel', None)
 
     print(f"\nVideoForge — manual batch run ({count} job(s))")
+    if channel:
+        print(f"Channel: {channel}")
     print("=" * 50)
 
-    summary = run_batch(count=count)
+    summary = run_batch(count=count, channel_id=channel)
 
     print("=" * 50)
     print(f"Batch complete:")
@@ -550,7 +564,8 @@ def cmd_fast_track(args) -> None:
     from database import init_db, get_active_alerts, create_job, get_next_job_id, link_alert_to_job
     import threading
 
-    config = load_config()
+    channel = getattr(args, 'channel', None)
+    config = load_config(channel_slug=channel)
     init_db()
 
     alerts = get_active_alerts()
@@ -566,8 +581,10 @@ def cmd_fast_track(args) -> None:
     job_id = get_next_job_id()
     bucket = alert.get('bucket', 'elec')
     topic  = alert.get('reframed_angle') or alert['topic']
+    channel_id = channel or config.get('default_channel', 'engineering_brief')
 
-    create_job(job_id=job_id, topic=topic, bucket=bucket, hook_style='shocking_fact')
+    create_job(job_id=job_id, topic=topic, bucket=bucket, hook_style='shocking_fact',
+               channel_id=channel_id)
     link_alert_to_job(alert['id'], job_id)
 
     print(f"\nJob {job_id} created from alert {args.alert_id}")
@@ -598,14 +615,17 @@ def cmd_add_topic(args) -> None:
     from database import init_db, insert_topic
     init_db()
 
+    channel = getattr(args, 'channel', None) or 'engineering_brief'
     topic_id = insert_topic(
         topic=args.topic,
         bucket=args.bucket or '',
         notes=args.notes or '',
+        channel_id=channel,
     )
     print(f"\nTopic added to bank — ID: {topic_id}")
-    print(f"  Topic:  {args.topic}")
-    print(f"  Bucket: {args.bucket or '(not set)'}")
+    print(f"  Topic:   {args.topic}")
+    print(f"  Bucket:  {args.bucket or '(not set)'}")
+    print(f"  Channel: {channel}")
     print()
 
 
@@ -776,6 +796,111 @@ def cmd_score_unscored(args) -> None:
     print("\nDone.\n")
 
 
+def cmd_create_channel(args) -> None:
+    """
+    Create a new channel and scaffold its directories.
+
+    Copies the engineering_brief channel as a template (config.json + empty
+    prompts/ and assets/ directories). The owner then customises the channel
+    config and adds a voice ID before running any jobs.
+
+    Args:
+        args: Parsed argparse namespace with slug, name, handle_yt, handle_tt,
+              niche, format attributes.
+    """
+    import shutil
+    from database import init_db, create_channel, get_channel
+
+    init_db()
+    slug = args.slug.replace(' ', '_').replace('-', '_').lower()
+
+    if get_channel(slug):
+        print(f"ERROR: Channel '{slug}' already exists.", file=sys.stderr)
+        sys.exit(1)
+
+    # Scaffold directories
+    channel_dir = Path(f'channels/{slug}')
+    template_dir = Path('channels/engineering_brief')
+
+    (channel_dir / 'prompts').mkdir(parents=True, exist_ok=True)
+    (channel_dir / 'assets' / 'music').mkdir(parents=True, exist_ok=True)
+    (channel_dir / 'assets' / 'backgrounds').mkdir(parents=True, exist_ok=True)
+
+    # Create a minimal config overlay
+    channel_config = {
+        "channel": {
+            "name": args.name,
+            "handle": args.handle_yt.lstrip('@') if args.handle_yt else '',
+            "niche": args.niche or '',
+            "platforms": ["tiktok", "youtube_shorts"],
+            "target_length_seconds": 70
+        },
+        "pipeline": {
+            "visual_mode": "images"
+        },
+        "voice": {
+            "provider": "elevenlabs",
+            "voice_id": "SET_VOICE_ID_FOR_THIS_CHANNEL"
+        }
+    }
+    if args.fmt == 'dialogue':
+        channel_config['pipeline']['visual_mode'] = 'images'
+        channel_config['voice'] = {
+            "provider": "elevenlabs",
+            "voice_id_alex": "SET_ALEX_VOICE_ID",
+            "voice_id_sam": "SET_SAM_VOICE_ID"
+        }
+
+    cfg_path = channel_dir / 'config.json'
+    with open(cfg_path, 'w', encoding='utf-8') as f:
+        json.dump(channel_config, f, indent=2)
+        f.write('\n')
+
+    create_channel(
+        slug=slug,
+        name=args.name,
+        handle_yt=args.handle_yt or '',
+        handle_tt=args.handle_tt or '',
+        niche=args.niche or '',
+        fmt=args.fmt or 'single_narrator',
+    )
+
+    print(f"\nChannel '{slug}' created.")
+    print(f"  Name:    {args.name}")
+    print(f"  Dir:     channels/{slug}/")
+    print(f"  Config:  channels/{slug}/config.json")
+    print()
+    print("Next steps:")
+    print(f"  1. Edit channels/{slug}/config.json — set voice_id")
+    print(f"  2. Add prompts to channels/{slug}/prompts/ (optional — inherits global defaults)")
+    print(f"  3. Add music to channels/{slug}/assets/music/ (optional)")
+    print(f"  4. Run: python main.py generate-script 'Your topic' --channel {slug}")
+    print()
+
+
+def cmd_list_channels(args) -> None:
+    """
+    Print all registered channels.
+
+    Args:
+        args: Parsed argparse namespace (no specific fields required).
+    """
+    from database import init_db, get_channels
+    init_db()
+
+    channels = get_channels(active_only=False)
+    if not channels:
+        print("No channels found.")
+        return
+
+    print(f"\n{'ID':<25} {'NAME':<30} {'FORMAT':<20} ACTIVE")
+    print("-" * 80)
+    for ch in channels:
+        active = 'yes' if ch.get('active') else 'no'
+        print(f"{ch['id']:<25} {ch['name']:<30} {ch.get('format',''):<20} {active}")
+    print()
+
+
 def cmd_test_connections(args) -> None:
     """
     Run the API connection test suite.
@@ -833,16 +958,18 @@ def cmd_list_jobs(args) -> None:
     from database import init_db, get_all_jobs
     init_db()
 
-    jobs = get_all_jobs()
+    channel = getattr(args, 'channel', None)
+    jobs = get_all_jobs(channel_id=channel)
     if not jobs:
         print("No jobs found.")
         return
 
-    print(f"\n{'ID':<6} {'STATUS':<14} {'BUCKET':<8} {'CREATED':<20} TOPIC")
-    print("-" * 80)
+    print(f"\n{'ID':<6} {'STATUS':<14} {'CHANNEL':<22} {'BUCKET':<8} {'CREATED':<20} TOPIC")
+    print("-" * 90)
     for job in jobs:
-        topic = job['topic'][:45] + ('…' if len(job['topic']) > 45 else '')
-        print(f"{job['id']:<6} {job['status']:<14} {job.get('bucket') or '':<8} "
+        topic = job['topic'][:40] + ('…' if len(job['topic']) > 40 else '')
+        ch = (job.get('channel_id') or '')[:20]
+        print(f"{job['id']:<6} {job['status']:<14} {ch:<22} {job.get('bucket') or '':<8} "
               f"{job['created_at']:<20} {topic}")
     print()
 
@@ -877,6 +1004,8 @@ def build_parser() -> argparse.ArgumentParser:
                           choices=['shocking_fact', 'wrong_assumption', 'nobody_talks'],
                           default=None,
                           help='Hook style override (default: value from config.json)')
+    p_script.add_argument('--channel', type=str, default=None, metavar='SLUG',
+                          help='Channel slug (default: default_channel from config.json)')
 
     # generate-voice
     p_voice = subparsers.add_parser('generate-voice', help='Run Stage 2: synthesise speech')
@@ -911,7 +1040,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.add_argument('job_id', type=str, help='Job ID e.g. 001')
 
     # list-jobs
-    subparsers.add_parser('list-jobs', help='List all jobs')
+    p_lj = subparsers.add_parser('list-jobs', help='List all jobs')
+    p_lj.add_argument('--channel', type=str, default=None, metavar='SLUG',
+                      help='Filter by channel slug')
 
     # batch
     p_batch = subparsers.add_parser(
@@ -922,6 +1053,21 @@ def build_parser() -> argparse.ArgumentParser:
         '--count', type=int, default=None, metavar='N',
         help='Number of jobs to process (default: batch_size_per_week from config.json)'
     )
+    p_batch.add_argument('--channel', type=str, default=None, metavar='SLUG',
+                         help='Run batch only for this channel')
+
+    # create-channel (Phase 12)
+    p_cc = subparsers.add_parser('create-channel', help='Scaffold a new channel directory and register it')
+    p_cc.add_argument('slug', type=str, help='Short identifier e.g. reddit_stories')
+    p_cc.add_argument('name', type=str, help='Display name e.g. "Reddit Stories"')
+    p_cc.add_argument('--handle-yt', type=str, default='', dest='handle_yt', help='YouTube handle e.g. @MyChannel')
+    p_cc.add_argument('--handle-tt', type=str, default='', dest='handle_tt', help='TikTok handle')
+    p_cc.add_argument('--niche', type=str, default='', help='Short niche description')
+    p_cc.add_argument('--format', type=str, choices=['single_narrator', 'dialogue'],
+                      default='single_narrator', dest='fmt', help='Script format (default: single_narrator)')
+
+    # list-channels (Phase 12)
+    subparsers.add_parser('list-channels', help='List all registered channels')
 
     # scan-trends
     subparsers.add_parser('scan-trends', help='Run a Google Trends scan and create priority alerts')
@@ -946,6 +1092,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_ft = subparsers.add_parser('fast-track', help='Fast-track a priority alert through the pipeline')
     p_ft.add_argument('--alert-id', type=int, required=True, metavar='ID',
                       help='Priority alert ID (from list-alerts)')
+    p_ft.add_argument('--channel', type=str, default=None, metavar='SLUG',
+                      help='Channel to create the job under')
 
     # add-topic
     p_add_topic = subparsers.add_parser('add-topic', help='Add a topic to the topic bank')
@@ -953,6 +1101,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_add_topic.add_argument('--bucket', type=str, choices=['elec', 'infra', 'vehicle', 'flaw'],
                              default='', help='Content bucket')
     p_add_topic.add_argument('--notes', type=str, default='', help='Optional notes')
+    p_add_topic.add_argument('--channel', type=str, default=None, metavar='SLUG',
+                             help='Channel slug (default: engineering_brief)')
 
     # archive-topic
     p_arch = subparsers.add_parser('archive-topic', help='Archive a topic in the topic bank')
@@ -1010,6 +1160,8 @@ COMMAND_MAP = {
     'upload':              cmd_upload,
     'status':              cmd_status,
     'list-jobs':           cmd_list_jobs,
+    'create-channel':      cmd_create_channel,
+    'list-channels':       cmd_list_channels,
 }
 
 

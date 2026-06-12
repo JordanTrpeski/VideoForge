@@ -46,6 +46,7 @@ Version: 1.0
 # 1. Standard library
 import json
 import os
+import shutil
 import socket
 import time
 import webbrowser
@@ -69,7 +70,10 @@ logger = setup_logger('upload_engine')
 # Constants
 # ---------------------------------------------------------------------------
 
-YOUTUBE_SCOPES = ['https://www.googleapis.com/auth/youtube.upload']
+YOUTUBE_SCOPES = [
+    'https://www.googleapis.com/auth/youtube.upload',
+    'https://www.googleapis.com/auth/yt-analytics.readonly',
+]
 YOUTUBE_API_VERSION = 'v3'
 YOUTUBE_UPLOAD_CHUNKSIZE = 10 * 1024 * 1024  # 10 MB per chunk
 YOUTUBE_SHORTS_CATEGORY_ID = '28'            # Science & Technology
@@ -188,7 +192,7 @@ def _check_youtube_ready(job_id: str) -> tuple:
     return True, 'OK', str(secrets_path)
 
 
-def _get_youtube_service(secrets_file: str, job_id: str):
+def _get_youtube_service(secrets_file: str, job_id: str, token_path: str = None):
     """
     Build and return an authenticated YouTube API service object.
 
@@ -209,7 +213,7 @@ def _get_youtube_service(secrets_file: str, job_id: str):
     from googleapiclient.discovery import build
 
     creds = None
-    token_path = Path(YOUTUBE_TOKEN_FILE)
+    token_path = Path(token_path) if token_path else Path(YOUTUBE_TOKEN_FILE)
 
     if token_path.exists():
         try:
@@ -288,9 +292,10 @@ def _upload_youtube_video(
             'categoryId':  YOUTUBE_SHORTS_CATEGORY_ID,
         },
         'status': {
-            'privacyStatus':            'public',
-            'selfDeclaredMadeForKids':  False,
-            'madeForKids':              False,
+            'privacyStatus':           'public',
+            'selfDeclaredMadeForKids': False,
+            'madeForKids':             False,
+            'containsSyntheticMedia':  True,
         },
     }
 
@@ -307,11 +312,16 @@ def _upload_youtube_video(
         chunksize=YOUTUBE_UPLOAD_CHUNKSIZE,
     )
 
-    insert_request = service.videos().insert(
-        part='snippet,status',
-        body=body,
-        media_body=media,
-    )
+    disclosure_accepted = True
+
+    def _do_insert(upload_body):
+        return service.videos().insert(
+            part='snippet,status',
+            body=upload_body,
+            media_body=media,
+        )
+
+    insert_request = _do_insert(body)
 
     response = None
     retry_count = 0
@@ -319,16 +329,37 @@ def _upload_youtube_video(
 
     while response is None:
         try:
-            status, response = insert_request.next_chunk()
-            if status:
-                progress = int(status.progress() * 100)
+            status_chunk, response = insert_request.next_chunk()
+            if status_chunk:
+                progress = int(status_chunk.progress() * 100)
                 elapsed = time.time() - upload_start
                 logger.info(
                     f"[JOB {job_id}] YouTube upload progress: {progress}% "
                     f"({elapsed:.0f}s elapsed)"
                 )
         except HttpError as e:
-            if e.resp.status in (500, 502, 503, 504):
+            # YouTube may reject containsSyntheticMedia on older API versions or
+            # accounts that haven't enabled the altered-content feature.
+            # Fall back without the field and mark the disclosure checklist.
+            if e.resp.status == 400 and 'containsSyntheticMedia' in str(e.content):
+                logger.warning(
+                    f"[JOB {job_id}] YouTube rejected containsSyntheticMedia — "
+                    f"retrying without field. Owner MUST set disclosure manually in Studio."
+                )
+                disclosure_accepted = False
+                body['status'].pop('containsSyntheticMedia', None)
+                # Reset media upload — must create a fresh MediaFileUpload
+                media2 = MediaFileUpload(
+                    str(video_path),
+                    mimetype='video/mp4',
+                    resumable=True,
+                    chunksize=YOUTUBE_UPLOAD_CHUNKSIZE,
+                )
+                insert_request = _do_insert(body)
+                insert_request._media = media2
+                response = None
+                continue
+            elif e.resp.status in (500, 502, 503, 504):
                 retry_count += 1
                 if retry_count > 5:
                     raise Exception(
@@ -342,6 +373,13 @@ def _upload_youtube_video(
                 time.sleep(wait)
             else:
                 raise
+
+    if not disclosure_accepted:
+        update_job_field(job_id, 'disclosure_checklist_required', 1)
+        logger.warning(
+            f"[JOB {job_id}] disclosure_checklist_required set — "
+            f"review gate will enforce manual Studio disclosure."
+        )
 
     video_id = response['id']
     video_url = f'https://www.youtube.com/shorts/{video_id}'
@@ -432,18 +470,24 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
         pass
 
 
-def _run_tiktok_oauth(client_key: str, client_secret: str, job_id: str) -> str:
+def _run_tiktok_oauth(
+    client_key: str,
+    client_secret: str,
+    job_id: str,
+    token_path: str = None,
+) -> str:
     """
     Run TikTok OAuth 2.0 authorization code flow via a local callback server.
 
     Opens the browser for user consent and listens on localhost for the
     redirect. Exchanges the code for an access token, saves it to
-    token_tiktok.json, and returns the token string.
+    token_tiktok.json (or the channel-specific path), and returns the token string.
 
     Args:
         client_key (str):    TikTok app client key.
         client_secret (str): TikTok app client secret.
         job_id (str):        Job identifier for log context.
+        token_path (str):    Override path for the saved token file.
 
     Returns:
         str: Access token.
@@ -523,29 +567,35 @@ def _run_tiktok_oauth(client_key: str, client_secret: str, job_id: str) -> str:
         'expires_in':    token_data['data'].get('expires_in', 86400),
         'obtained_at':   time.time(),
     }
-    Path(TIKTOK_TOKEN_FILE).write_text(
-        json.dumps(token_payload, indent=2), encoding='utf-8'
-    )
+    _tt_path = Path(token_path) if token_path else Path(TIKTOK_TOKEN_FILE)
+    _tt_path.parent.mkdir(parents=True, exist_ok=True)
+    _tt_path.write_text(json.dumps(token_payload, indent=2), encoding='utf-8')
     logger.info(
-        f"[JOB {job_id}] TikTok token saved to {TIKTOK_TOKEN_FILE} "
+        f"[JOB {job_id}] TikTok token saved to {_tt_path} "
         f"(open_id: {open_id})"
     )
     return access_token
 
 
-def _get_tiktok_access_token(client_key: str, client_secret: str, job_id: str) -> str:
+def _get_tiktok_access_token(
+    client_key: str,
+    client_secret: str,
+    job_id: str,
+    token_path: str = None,
+) -> str:
     """
     Return a valid TikTok access token.
 
     Priority:
       1. TIKTOK_ACCESS_TOKEN env var (manually set)
-      2. token_tiktok.json saved from a previous OAuth run
+      2. Channel-specific token file (or token_tiktok.json) from a previous OAuth run
       3. Run the OAuth flow (opens browser)
 
     Args:
         client_key (str):    TikTok app client key.
         client_secret (str): TikTok app client secret.
         job_id (str):        Job identifier for log context.
+        token_path (str):    Override path for the token file (channel-specific).
 
     Returns:
         str: Valid access token.
@@ -557,7 +607,7 @@ def _get_tiktok_access_token(client_key: str, client_secret: str, job_id: str) -
         return env_token
 
     # 2. Saved token from previous OAuth run
-    token_file = Path(TIKTOK_TOKEN_FILE)
+    token_file = Path(token_path) if token_path else Path(TIKTOK_TOKEN_FILE)
     if token_file.exists():
         try:
             saved = json.loads(token_file.read_text(encoding='utf-8'))
@@ -579,7 +629,7 @@ def _get_tiktok_access_token(client_key: str, client_secret: str, job_id: str) -
             )
 
     # 3. Full OAuth flow
-    return _run_tiktok_oauth(client_key, client_secret, job_id)
+    return _run_tiktok_oauth(client_key, client_secret, job_id, token_path=str(token_file))
 
 
 def _upload_tiktok_video(
@@ -758,6 +808,60 @@ def _upload_tiktok_video(
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Permanent archive
+# ---------------------------------------------------------------------------
+
+def archive_job_files(job_id: str, channel_id: str) -> None:
+    """
+    Copy the four permanent artefacts to archive/<channel>/<job>/ after a
+    successful upload.  The archive directory is never cleaned up.
+
+    Copies:
+      - Final (captioned) video
+      - Chosen thumbnail
+      - Script JSON
+      - Metadata JSON
+
+    Args:
+        job_id (str):     Job identifier.
+        channel_id (str): Channel identifier (used as directory component).
+    """
+    archive_dir = Path(f'archive/{channel_id}/{job_id}')
+    archive_dir.mkdir(parents=True, exist_ok=True)
+
+    job = get_job(job_id)
+    if not job:
+        logger.warning(f"[JOB {job_id}] archive_job_files: job not found in DB — skipping")
+        return
+
+    candidates = {
+        'final_video': job.get('final_video_path'),
+        'thumbnail':   job.get('thumbnail_path'),
+        'script':      f'output/scripts/{job_id}.json',
+        'metadata':    f'output/metadata/{job_id}.json',
+    }
+
+    for name, src in candidates.items():
+        if not src:
+            logger.debug(f"[JOB {job_id}] Archive: {name} path is empty — skipping")
+            continue
+        src_path = Path(src)
+        if not src_path.exists():
+            logger.warning(f"[JOB {job_id}] Archive: {name} not found at {src_path} — skipping")
+            continue
+        dest = archive_dir / src_path.name
+        try:
+            shutil.copy2(str(src_path), str(dest))
+            size_mb = dest.stat().st_size / (1024 * 1024)
+            logger.info(f"[JOB {job_id}] Archived {name}: {dest} ({size_mb:.3f} MB)")
+        except Exception as e:
+            logger.warning(f"[JOB {job_id}] Archive copy failed for {name}: {e}")
+
+    logger.info(f"[JOB {job_id}] Archive complete: {archive_dir}")
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -795,7 +899,22 @@ def upload_video(job_id: str, config: dict) -> dict:
         # ----------------------------------------------------------------
         metadata = _load_metadata(job_id)
         video_path = _resolve_video_path(job_id)
-        thumbnail_path = Path(f'output/thumbnails/{job_id}.jpg')
+
+        # Resolve thumbnail: use the chosen variant if stored in DB, else default
+        job_row = get_job(job_id)
+        chosen_variant = (job_row.get('thumbnail_variant') or 0) if job_row else 0
+        if chosen_variant and chosen_variant > 0:
+            thumbnail_path = Path(f'output/thumbnails/{job_id}_v{chosen_variant}.jpg')
+            if not thumbnail_path.exists():
+                logger.warning(
+                    f"[JOB {job_id}] Chosen thumbnail variant {chosen_variant} not found "
+                    f"— falling back to default"
+                )
+                thumbnail_path = Path(f'output/thumbnails/{job_id}.jpg')
+        else:
+            # Check if text_template variants exist and default to v1
+            v1 = Path(f'output/thumbnails/{job_id}_v1.jpg')
+            thumbnail_path = v1 if v1.exists() else Path(f'output/thumbnails/{job_id}.jpg')
 
         logger.info(
             f"[JOB {job_id}] Uploading '{metadata['topic']}' — "
@@ -804,9 +923,20 @@ def upload_video(job_id: str, config: dict) -> dict:
         )
 
         # ----------------------------------------------------------------
+        # Resolve channel credential paths
+        # ----------------------------------------------------------------
+        channel_meta = config.get('_channel', {})
+        yt_token_path  = channel_meta.get('youtube_token_path')
+        yt_secrets_override = channel_meta.get('youtube_secrets_path')
+        tt_token_path  = channel_meta.get('tiktok_token_path')
+
+        # ----------------------------------------------------------------
         # Check platform guards before doing anything
         # ----------------------------------------------------------------
         yt_ready, yt_msg, yt_secrets = _check_youtube_ready(job_id)
+        # Prefer channel-specific secrets file when it exists
+        if yt_secrets_override and Path(yt_secrets_override).exists():
+            yt_secrets = yt_secrets_override
         tt_ready, tt_msg = _check_tiktok_ready(job_id)
 
         if not yt_ready:
@@ -823,7 +953,7 @@ def upload_video(job_id: str, config: dict) -> dict:
         if yt_ready:
             try:
                 logger.info(f"[JOB {job_id}] Starting YouTube upload")
-                service = _get_youtube_service(yt_secrets, job_id)
+                service = _get_youtube_service(yt_secrets, job_id, token_path=yt_token_path)
                 yt = _upload_youtube_video(
                     service, video_path, thumbnail_path, metadata, job_id
                 )
@@ -851,7 +981,7 @@ def upload_video(job_id: str, config: dict) -> dict:
                 client_key    = os.getenv('TIKTOK_CLIENT_KEY', '').strip()
                 client_secret = os.getenv('TIKTOK_CLIENT_SECRET', '').strip()
                 access_token  = _get_tiktok_access_token(
-                    client_key, client_secret, job_id
+                    client_key, client_secret, job_id, token_path=tt_token_path
                 )
                 tt = _upload_tiktok_video(
                     access_token, video_path, metadata, job_id
@@ -893,6 +1023,12 @@ def upload_video(job_id: str, config: dict) -> dict:
         elif any_success:
             update_job_status(job_id, 'posted')
             logger.info(f"[JOB {job_id}] Job status set to POSTED")
+            # Permanent archive — copy artefacts after every successful upload
+            try:
+                channel_id = config.get('_channel', {}).get('id', config.get('default_channel', 'engineering_brief'))
+                archive_job_files(job_id, channel_id)
+            except Exception as e:
+                logger.warning(f"[JOB {job_id}] Archive failed (non-fatal): {e}")
         else:
             # All platforms skipped — leave status unchanged (still at review)
             logger.info(

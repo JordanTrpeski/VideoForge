@@ -97,46 +97,78 @@ def init_db() -> None:
     try:
         cursor = conn.cursor()
         cursor.executescript("""
+            -- Phase 12: channels registry
+            CREATE TABLE IF NOT EXISTS channels (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                handle_yt   TEXT DEFAULT '',
+                handle_tt   TEXT DEFAULT '',
+                niche       TEXT DEFAULT '',
+                format      TEXT DEFAULT 'single_narrator',
+                active      INTEGER DEFAULT 1,
+                created_at  TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Seed the default channel if it doesn't already exist
+            INSERT OR IGNORE INTO channels (id, name, handle_yt, handle_tt, niche, format)
+            VALUES (
+                'engineering_brief',
+                'The Engineering Brief',
+                '@HowThingsWorkEng',
+                '@HowThingsWorkEng',
+                'engineering',
+                'single_narrator'
+            );
+
             CREATE TABLE IF NOT EXISTS jobs (
-                id                  TEXT PRIMARY KEY,
-                topic               TEXT NOT NULL,
-                bucket              TEXT,
-                hook_style          TEXT,
-                status              TEXT DEFAULT 'queued',
-                error_module        TEXT,
-                error_message       TEXT,
-                script_path         TEXT,
-                audio_path          TEXT,
-                images_dir          TEXT,
-                raw_video_path      TEXT,
-                final_video_path    TEXT,
-                thumbnail_path      TEXT,
-                metadata_path       TEXT,
-                tiktok_url          TEXT,
-                youtube_url         TEXT,
-                tiktok_video_id     TEXT,
-                youtube_video_id    TEXT,
-                duration_seconds    REAL,
-                word_count          INTEGER,
-                similarity_checked  INTEGER DEFAULT 0,
-                similar_to_job      TEXT,
-                similarity_score    REAL,
+                id                    TEXT PRIMARY KEY,
+                topic                 TEXT NOT NULL,
+                bucket                TEXT,
+                hook_style            TEXT,
+                status                TEXT DEFAULT 'queued',
+                error_module          TEXT,
+                error_message         TEXT,
+                script_path           TEXT,
+                audio_path            TEXT,
+                images_dir            TEXT,
+                raw_video_path        TEXT,
+                final_video_path      TEXT,
+                thumbnail_path        TEXT,
+                metadata_path         TEXT,
+                tiktok_url            TEXT,
+                youtube_url           TEXT,
+                tiktok_video_id       TEXT,
+                youtube_video_id      TEXT,
+                duration_seconds      REAL,
+                word_count            INTEGER,
+                similarity_checked    INTEGER DEFAULT 0,
+                similar_to_job        TEXT,
+                similarity_score      REAL,
                 picked_length_seconds INTEGER,
-                picked_hook_style   TEXT,
-                created_at          TEXT DEFAULT (datetime('now')),
-                updated_at          TEXT DEFAULT (datetime('now'))
+                picked_hook_style     TEXT,
+                channel_id            TEXT DEFAULT 'engineering_brief',
+                created_at            TEXT DEFAULT (datetime('now')),
+                updated_at            TEXT DEFAULT (datetime('now'))
             );
 
             CREATE TABLE IF NOT EXISTS analytics (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                job_id          TEXT REFERENCES jobs(id),
-                platform        TEXT,
-                views           INTEGER DEFAULT 0,
-                likes           INTEGER DEFAULT 0,
-                comments        INTEGER DEFAULT 0,
-                shares          INTEGER DEFAULT 0,
-                watch_time_avg  REAL,
-                pulled_at       TEXT DEFAULT (datetime('now'))
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id              TEXT REFERENCES jobs(id),
+                platform            TEXT,
+                views               INTEGER DEFAULT 0,
+                likes               INTEGER DEFAULT 0,
+                comments            INTEGER DEFAULT 0,
+                shares              INTEGER DEFAULT 0,
+                watch_time_avg      REAL,
+                channel_id          TEXT DEFAULT 'engineering_brief',
+                -- YouTube Analytics API v2 fields (Phase 13)
+                avg_view_duration   REAL,       -- averageViewDuration (seconds)
+                avg_view_percentage REAL,       -- averageViewPercentage (0-100)
+                subscribers_gained  INTEGER,    -- subscribersGained
+                impressions         INTEGER,    -- impressions (manual/CSV only — not public API)
+                ctr                 REAL,       -- CTR as decimal 0.03 = 3% (manual/CSV only)
+                data_source         TEXT DEFAULT 'api',  -- 'api' | 'manual' | 'csv'
+                pulled_at           TEXT DEFAULT (datetime('now'))
             );
 
             -- Phase 11.v1.B: Priority Alert system
@@ -177,6 +209,7 @@ def init_db() -> None:
                 archived        INTEGER DEFAULT 0,
                 archived_at     TEXT,
                 archive_reason  TEXT,
+                channel_id      TEXT DEFAULT 'engineering_brief',
                 added_at        TEXT DEFAULT (datetime('now')),
                 updated_at      TEXT DEFAULT (datetime('now'))
             );
@@ -197,6 +230,7 @@ def create_job(
     mode: str = 'standard',
     source: str = 'manual',
     source_selftext: Optional[str] = None,
+    channel_id: str = 'engineering_brief',
 ) -> None:
     """
     Insert a new job row with status='queued'.
@@ -210,21 +244,22 @@ def create_job(
         source (str):          Provenance: 'manual' / 'reddit' / 'topic_bank' etc.
         source_selftext (str): Raw source story text the script engine rewrites
                                (Reddit mode only — None for standard jobs).
+        channel_id (str):      Channel this job belongs to (default 'engineering_brief').
 
     Returns:
         None
     """
     logger.info(
         f"[JOB {job_id}] Creating job — topic: '{topic}', bucket: {bucket}, "
-        f"hook: {hook_style}, mode: {mode}, source: {source}"
+        f"hook: {hook_style}, mode: {mode}, source: {source}, channel: {channel_id}"
     )
     conn = get_connection()
     try:
         conn.execute(
             """INSERT INTO jobs (id, topic, bucket, hook_style, status,
-                                 mode, source, source_selftext)
-               VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)""",
-            (job_id, topic, bucket, hook_style, mode, source, source_selftext)
+                                 mode, source, source_selftext, channel_id)
+               VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)""",
+            (job_id, topic, bucket, hook_style, mode, source, source_selftext, channel_id)
         )
         conn.commit()
         logger.info(f"[JOB {job_id}] Job created successfully")
@@ -286,7 +321,11 @@ def update_job_field(job_id: str, field: str, value) -> None:
         'tiktok_url', 'youtube_url', 'tiktok_video_id', 'youtube_video_id',
         'duration_seconds', 'word_count', 'bucket', 'hook_style',
         'mode', 'source', 'source_selftext', 'review_note',
-        'picked_length_seconds', 'picked_hook_style',
+        'picked_length_seconds', 'picked_hook_style', 'channel_id',
+        # Reddit dual output
+        'story_id', 'story_role', 'linked_job_id', 'scheduled_upload_at',
+        # Compliance & odds pack
+        'thumbnail_variant', 'disclosure_checklist_required', 'description_skeleton_index',
     }
     if field not in allowed_fields:
         raise ValueError(f"Field '{field}' is not an allowed job column")
@@ -321,7 +360,10 @@ def get_job(job_id: str) -> Optional[dict]:
         conn.close()
 
 
-def get_last_job_variation(exclude_job_id: Optional[str] = None) -> tuple:
+def get_last_job_variation(
+    exclude_job_id: Optional[str] = None,
+    channel_id: Optional[str] = None,
+) -> tuple:
     """
     Return (picked_length_seconds, picked_hook_style) from the most recently
     created job that has both variation fields set.  Used by the variation
@@ -329,25 +371,27 @@ def get_last_job_variation(exclude_job_id: Optional[str] = None) -> tuple:
 
     Args:
         exclude_job_id (str): Exclude this job ID (the current job being created).
+        channel_id (str):     If provided, restrict to jobs on this channel.
 
     Returns:
         tuple: (int|None, str|None) — (length_seconds, hook_style).
     """
     conn = get_connection()
     try:
+        conditions = ["picked_length_seconds IS NOT NULL"]
+        params: list = []
         if exclude_job_id:
-            row = conn.execute(
-                """SELECT picked_length_seconds, picked_hook_style FROM jobs
-                   WHERE id != ? AND picked_length_seconds IS NOT NULL
-                   ORDER BY created_at DESC LIMIT 1""",
-                (exclude_job_id,)
-            ).fetchone()
-        else:
-            row = conn.execute(
-                """SELECT picked_length_seconds, picked_hook_style FROM jobs
-                   WHERE picked_length_seconds IS NOT NULL
-                   ORDER BY created_at DESC LIMIT 1"""
-            ).fetchone()
+            conditions.append("id != ?")
+            params.append(exclude_job_id)
+        if channel_id:
+            conditions.append("channel_id = ?")
+            params.append(channel_id)
+        where = "WHERE " + " AND ".join(conditions)
+        row = conn.execute(
+            f"SELECT picked_length_seconds, picked_hook_style FROM jobs {where} "
+            "ORDER BY created_at DESC LIMIT 1",
+            params,
+        ).fetchone()
         if row:
             return (row['picked_length_seconds'], row['picked_hook_style'])
         return (None, None)
@@ -355,27 +399,35 @@ def get_last_job_variation(exclude_job_id: Optional[str] = None) -> tuple:
         conn.close()
 
 
-def get_all_jobs(status_filter: Optional[str] = None) -> list:
+def get_all_jobs(
+    status_filter: Optional[str] = None,
+    channel_id: Optional[str] = None,
+) -> list:
     """
-    Fetch all job rows, optionally filtered by status.
+    Fetch all job rows, optionally filtered by status and/or channel.
 
     Args:
         status_filter (str): If provided, only return jobs with this status.
+        channel_id (str):    If provided, only return jobs for this channel.
 
     Returns:
         list[dict]: List of job rows as dictionaries, newest first.
     """
     conn = get_connection()
     try:
+        conditions = []
+        params: list = []
         if status_filter:
-            rows = conn.execute(
-                "SELECT * FROM jobs WHERE status = ? ORDER BY created_at DESC",
-                (status_filter,)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM jobs ORDER BY created_at DESC"
-            ).fetchall()
+            conditions.append("status = ?")
+            params.append(status_filter)
+        if channel_id:
+            conditions.append("channel_id = ?")
+            params.append(channel_id)
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        rows = conn.execute(
+            f"SELECT * FROM jobs {where} ORDER BY created_at DESC",
+            params
+        ).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()
@@ -404,35 +456,424 @@ def insert_analytics(
     likes: int = 0,
     comments: int = 0,
     shares: int = 0,
-    watch_time_avg: Optional[float] = None
+    watch_time_avg: Optional[float] = None,
+    channel_id: str = 'engineering_brief',
+    avg_view_duration: Optional[float] = None,
+    avg_view_percentage: Optional[float] = None,
+    subscribers_gained: Optional[int] = None,
+    impressions: Optional[int] = None,
+    ctr: Optional[float] = None,
+    data_source: str = 'api',
 ) -> None:
     """
-    Insert a new analytics snapshot for a job.
+    Insert a new analytics snapshot for a job. Snapshots always INSERT — never
+    overwrite history — so callers can accumulate time-series data safely.
 
     Args:
-        job_id (str):           Job identifier.
-        platform (str):         'tiktok' or 'youtube'.
-        views (int):            View count.
-        likes (int):            Like count.
-        comments (int):         Comment count.
-        shares (int):           Share count.
-        watch_time_avg (float): Average watch time in seconds.
+        job_id (str):                  Job identifier.
+        platform (str):                'youtube' or 'tiktok'.
+        views (int):                   View count.
+        likes (int):                   Like count.
+        comments (int):                Comment count.
+        shares (int):                  Share count.
+        watch_time_avg (float):        Average watch time in seconds (legacy field).
+        channel_id (str):              Channel this row belongs to.
+        avg_view_duration (float):     averageViewDuration in seconds (YouTube Analytics API v2).
+        avg_view_percentage (float):   averageViewPercentage 0-100 (YouTube Analytics API v2).
+        subscribers_gained (int):      subscribersGained (YouTube Analytics API v2).
+        impressions (int):             Impression count (manual/CSV — not exposed by public API).
+        ctr (float):                   CTR as decimal 0.03=3% (manual/CSV).
+        data_source (str):             'api' | 'manual' | 'csv'.
 
     Returns:
         None
     """
-    logger.debug(f"[JOB {job_id}] Inserting analytics — platform: {platform}, views: {views}")
+    logger.debug(
+        f"[JOB {job_id}] Inserting analytics — platform: {platform}, "
+        f"views: {views}, source: {data_source}"
+    )
     conn = get_connection()
     try:
         conn.execute(
             """INSERT INTO analytics
-               (job_id, platform, views, likes, comments, shares, watch_time_avg)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (job_id, platform, views, likes, comments, shares, watch_time_avg)
+               (job_id, platform, views, likes, comments, shares, watch_time_avg,
+                channel_id, avg_view_duration, avg_view_percentage, subscribers_gained,
+                impressions, ctr, data_source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (job_id, platform, views, likes, comments, shares, watch_time_avg,
+             channel_id, avg_view_duration, avg_view_percentage, subscribers_gained,
+             impressions, ctr, data_source)
         )
         conn.commit()
     finally:
         conn.close()
+
+
+def insert_manual_analytics(
+    job_id: str,
+    platform: str,
+    impressions: Optional[int] = None,
+    ctr: Optional[float] = None,
+    avg_view_percentage: Optional[float] = None,
+    avg_view_duration: Optional[float] = None,
+    views: int = 0,
+    likes: int = 0,
+    channel_id: str = 'engineering_brief',
+    data_source: str = 'manual',
+) -> int:
+    """
+    Insert a manual analytics row (from the dashboard form or CSV import).
+    Always appends a new snapshot row — never overwrites history.
+
+    Args:
+        job_id (str):                  Job identifier.
+        platform (str):                'youtube' or 'tiktok'.
+        impressions (int):             Impression count from YouTube Studio.
+        ctr (float):                   CTR as decimal (0.03 = 3%).
+        avg_view_percentage (float):   Retention % (0-100).
+        avg_view_duration (float):     Average view duration in seconds.
+        views (int):                   View count from manual entry.
+        likes (int):                   Like count from manual entry.
+        channel_id (str):              Channel this row belongs to.
+        data_source (str):             'manual' or 'csv'.
+
+    Returns:
+        int: Rowid of the inserted row.
+    """
+    logger.info(
+        f"[JOB {job_id}] Manual analytics entry — platform: {platform}, "
+        f"impressions: {impressions}, ctr: {ctr}, retention: {avg_view_percentage}%, "
+        f"source: {data_source}"
+    )
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            """INSERT INTO analytics
+               (job_id, platform, views, likes, comments, shares,
+                channel_id, avg_view_duration, avg_view_percentage,
+                impressions, ctr, data_source)
+               VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)""",
+            (job_id, platform, views, likes, channel_id,
+             avg_view_duration, avg_view_percentage, impressions, ctr, data_source)
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_latest_analytics_per_job(
+    channel_id: Optional[str] = None,
+    platform: str = 'youtube',
+    status_filter: str = 'posted',
+) -> list:
+    """
+    Return the most-recent analytics snapshot per posted job, optionally
+    filtered to a specific channel.  Used by the kill-metrics engine and
+    channel health card.
+
+    Args:
+        channel_id (str): Channel to filter to. None = all channels.
+        platform (str):   Platform to query ('youtube' or 'tiktok').
+        status_filter (str): Job status to include (default 'posted').
+
+    Returns:
+        list[dict]: One row per job with latest snapshot values plus job metadata.
+    """
+    conn = get_connection()
+    try:
+        params: list = [platform, status_filter]
+        ch_clause = ""
+        if channel_id:
+            ch_clause = "AND j.channel_id = ?"
+            params.append(channel_id)
+
+        rows = conn.execute(
+            f"""SELECT j.id AS job_id, j.topic, j.bucket, j.channel_id,
+                       j.created_at AS job_created_at,
+                       a.views, a.likes, a.comments,
+                       a.avg_view_duration, a.avg_view_percentage,
+                       a.subscribers_gained, a.impressions, a.ctr,
+                       a.data_source, a.pulled_at
+                FROM jobs j
+                LEFT JOIN analytics a ON a.id = (
+                    SELECT id FROM analytics
+                    WHERE job_id = j.id AND platform = ?
+                    ORDER BY pulled_at DESC LIMIT 1
+                )
+                WHERE j.status = ? {ch_clause}
+                ORDER BY j.created_at ASC""",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_all_analytics_for_job(job_id: str, platform: str = 'youtube') -> list:
+    """
+    Return all analytics snapshots for a single job, newest first.
+    Used to show accumulation history and never-overwrite guarantee.
+
+    Args:
+        job_id (str):   Job identifier.
+        platform (str): Platform filter.
+
+    Returns:
+        list[dict]: All snapshot rows for this job+platform.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT * FROM analytics
+               WHERE job_id = ? AND platform = ?
+               ORDER BY pulled_at DESC""",
+            (job_id, platform),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 12 — Channel management helpers
+# ---------------------------------------------------------------------------
+
+def create_channel(
+    slug: str,
+    name: str,
+    handle_yt: str = '',
+    handle_tt: str = '',
+    niche: str = '',
+    fmt: str = 'single_narrator',
+) -> bool:
+    """
+    Register a new channel in the channels table.
+
+    Args:
+        slug (str):       Short identifier used in file paths e.g. 'reddit_stories'.
+        name (str):       Display name.
+        handle_yt (str):  YouTube handle e.g. '@MyChannel'.
+        handle_tt (str):  TikTok handle.
+        niche (str):      Short niche description.
+        fmt (str):        'single_narrator' or 'dialogue'.
+
+    Returns:
+        bool: True if created, False if a channel with this slug already existed.
+    """
+    conn = get_connection()
+    try:
+        existing = conn.execute(
+            "SELECT id FROM channels WHERE id = ?", (slug,)
+        ).fetchone()
+        if existing:
+            logger.warning(f"Channel '{slug}' already exists — skipping create")
+            return False
+        conn.execute(
+            """INSERT INTO channels (id, name, handle_yt, handle_tt, niche, format)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (slug, name, handle_yt, handle_tt, niche, fmt),
+        )
+        conn.commit()
+        logger.info(f"Channel '{slug}' created — {name}")
+        return True
+    finally:
+        conn.close()
+
+
+def get_channels(active_only: bool = True) -> list:
+    """
+    Fetch all registered channels.
+
+    Args:
+        active_only (bool): If True, only return channels where active = 1.
+
+    Returns:
+        list[dict]: Channel rows.
+    """
+    conn = get_connection()
+    try:
+        if active_only:
+            rows = conn.execute(
+                "SELECT * FROM channels WHERE active = 1 ORDER BY created_at ASC"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM channels ORDER BY created_at ASC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_channel(slug: str) -> Optional[dict]:
+    """
+    Fetch a single channel row by its slug ID.
+
+    Args:
+        slug (str): Channel identifier.
+
+    Returns:
+        dict | None: Channel row, or None if not found.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM channels WHERE id = ?", (slug,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Reddit dual output — story link helpers
+# ---------------------------------------------------------------------------
+
+def get_linked_job(job_id: str) -> Optional[dict]:
+    """
+    Return the partner job linked via linked_job_id (long→short or short→long).
+
+    Args:
+        job_id (str): Either the long or the short job ID.
+
+    Returns:
+        dict | None: The partner job row, or None if not linked or not found.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT linked_job_id FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if not row or not row['linked_job_id']:
+            return None
+        linked = conn.execute(
+            "SELECT * FROM jobs WHERE id = ?", (row['linked_job_id'],)
+        ).fetchone()
+        return dict(linked) if linked else None
+    finally:
+        conn.close()
+
+
+def get_scheduled_upload_jobs() -> list:
+    """
+    Return jobs that have passed their scheduled upload time and are ready to upload.
+
+    These are teaser (story_role='short') jobs approved alongside a long-form video
+    but delayed by at least 24 hours to give the long video a head-start.
+
+    Returns:
+        list[dict]: Jobs with status='scheduled_upload' where scheduled_upload_at <= now.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT * FROM jobs
+               WHERE status = 'scheduled_upload'
+               AND scheduled_upload_at IS NOT NULL
+               AND scheduled_upload_at <= datetime('now')
+               ORDER BY scheduled_upload_at ASC"""
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Compliance & odds pack helpers
+# ---------------------------------------------------------------------------
+
+def get_last_description_skeleton_index(channel_id: str) -> int:
+    """
+    Return the description_skeleton_index used by the most recently completed
+    job on this channel, or -1 if no jobs exist yet.
+
+    Args:
+        channel_id (str): Channel identifier.
+
+    Returns:
+        int: Last skeleton index (0, 1, or 2), or -1 if none.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """SELECT description_skeleton_index FROM jobs
+               WHERE channel_id = ?
+               AND description_skeleton_index >= 0
+               ORDER BY created_at DESC LIMIT 1""",
+            (channel_id,),
+        ).fetchone()
+        return row['description_skeleton_index'] if row else -1
+    finally:
+        conn.close()
+
+
+def get_recent_youtube_titles(channel_id: str, limit: int = 10) -> list:
+    """
+    Return the youtube_title values from the most recent posted jobs on this
+    channel, for title first-4-words uniqueness checking.
+
+    Args:
+        channel_id (str): Channel identifier.
+        limit (int):      Number of recent titles to return.
+
+    Returns:
+        list[str]: Most recent youtube_title strings (may be empty).
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT youtube_url, id FROM jobs
+               WHERE channel_id = ?
+               AND status IN ('posted', 'review', 'uploading')
+               ORDER BY created_at DESC LIMIT ?""",
+            (channel_id, limit),
+        ).fetchall()
+        # Pull titles from metadata JSON files since youtube_title isn't in jobs table
+        import json as _json
+        from pathlib import Path as _Path
+        titles = []
+        for row in rows:
+            meta_path = _Path(f'output/metadata/{row["id"]}.json')
+            if meta_path.exists():
+                try:
+                    data = _json.loads(meta_path.read_text(encoding='utf-8'))
+                    t = data.get('youtube_title', '')
+                    if t:
+                        titles.append(t)
+                except Exception:
+                    pass
+        return titles
+    finally:
+        conn.close()
+
+
+def get_archive_size_bytes(channel_id: str = None) -> dict:
+    """
+    Return archive folder sizes.
+
+    Args:
+        channel_id (str | None): If given, return size for that channel only;
+                                 otherwise return total and per-channel breakdown.
+
+    Returns:
+        dict: {'total_bytes': int, 'channels': {channel_id: int}}
+    """
+    from pathlib import Path as _Path
+    archive_root = _Path('archive')
+    result = {'total_bytes': 0, 'channels': {}}
+
+    if not archive_root.exists():
+        return result
+
+    for ch_dir in archive_root.iterdir():
+        if not ch_dir.is_dir():
+            continue
+        if channel_id and ch_dir.name != channel_id:
+            continue
+        ch_bytes = sum(f.stat().st_size for f in ch_dir.rglob('*') if f.is_file())
+        result['channels'][ch_dir.name] = ch_bytes
+        result['total_bytes'] += ch_bytes
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +923,26 @@ def _run_migrations() -> None:
         # Variation system — per-job randomly chosen length and hook style
         "ALTER TABLE jobs ADD COLUMN picked_length_seconds INTEGER",
         "ALTER TABLE jobs ADD COLUMN picked_hook_style TEXT",
+        # Phase 12 — multi-channel: channel_id FK on all tables
+        "ALTER TABLE jobs ADD COLUMN channel_id TEXT DEFAULT 'engineering_brief'",
+        "ALTER TABLE analytics ADD COLUMN channel_id TEXT DEFAULT 'engineering_brief'",
+        "ALTER TABLE topic_bank ADD COLUMN channel_id TEXT DEFAULT 'engineering_brief'",
+        # Phase 13 — YouTube Analytics API v2 + manual CTR entry
+        "ALTER TABLE analytics ADD COLUMN avg_view_duration REAL",
+        "ALTER TABLE analytics ADD COLUMN avg_view_percentage REAL",
+        "ALTER TABLE analytics ADD COLUMN subscribers_gained INTEGER",
+        "ALTER TABLE analytics ADD COLUMN impressions INTEGER",
+        "ALTER TABLE analytics ADD COLUMN ctr REAL",
+        "ALTER TABLE analytics ADD COLUMN data_source TEXT DEFAULT 'api'",
+        # Reddit dual output — story linking
+        "ALTER TABLE jobs ADD COLUMN story_id TEXT",
+        "ALTER TABLE jobs ADD COLUMN story_role TEXT",
+        "ALTER TABLE jobs ADD COLUMN linked_job_id TEXT",
+        "ALTER TABLE jobs ADD COLUMN scheduled_upload_at TEXT",
+        # Compliance & odds pack
+        "ALTER TABLE jobs ADD COLUMN thumbnail_variant INTEGER DEFAULT 0",
+        "ALTER TABLE jobs ADD COLUMN disclosure_checklist_required INTEGER DEFAULT 0",
+        "ALTER TABLE jobs ADD COLUMN description_skeleton_index INTEGER DEFAULT -1",
     ]
     conn = get_connection()
     try:
@@ -730,6 +1191,7 @@ def insert_topic(
     bucket: str = '',
     notes: str = '',
     hook_suggestion: str = '',
+    channel_id: str = 'engineering_brief',
 ) -> int:
     """
     Add a new topic to the topic_bank with status='pending'.
@@ -739,6 +1201,7 @@ def insert_topic(
         bucket (str):          Content bucket.
         notes (str):           Free-text notes.
         hook_suggestion (str): Optional suggested hook.
+        channel_id (str):      Channel this topic belongs to.
 
     Returns:
         int: Rowid of the inserted topic.
@@ -746,9 +1209,9 @@ def insert_topic(
     conn = get_connection()
     try:
         cur = conn.execute(
-            """INSERT INTO topic_bank (topic, bucket, notes, hook_suggestion, status)
-               VALUES (?, ?, ?, ?, 'pending')""",
-            (topic, bucket, notes, hook_suggestion),
+            """INSERT INTO topic_bank (topic, bucket, notes, hook_suggestion, status, channel_id)
+               VALUES (?, ?, ?, ?, 'pending', ?)""",
+            (topic, bucket, notes, hook_suggestion, channel_id),
         )
         conn.commit()
         return cur.lastrowid
@@ -756,29 +1219,37 @@ def insert_topic(
         conn.close()
 
 
-def get_topics(include_archived: bool = False, limit: int = 500) -> list:
+def get_topics(
+    include_archived: bool = False,
+    limit: int = 500,
+    channel_id: Optional[str] = None,
+) -> list:
     """
     Fetch topics from the topic_bank.
 
     Args:
         include_archived (bool): If False, hide archived rows.
         limit (int):             Maximum rows to return.
+        channel_id (str):        If provided, filter to this channel.
 
     Returns:
         list[dict]: Topic rows.
     """
     conn = get_connection()
     try:
-        if include_archived:
-            rows = conn.execute(
-                "SELECT * FROM topic_bank ORDER BY added_at DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM topic_bank WHERE archived = 0 ORDER BY added_at DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
+        conditions = []
+        params: list = []
+        if not include_archived:
+            conditions.append("archived = 0")
+        if channel_id:
+            conditions.append("channel_id = ?")
+            params.append(channel_id)
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT * FROM topic_bank {where} ORDER BY added_at DESC LIMIT ?",
+            params,
+        ).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()

@@ -50,6 +50,28 @@ The "narration" field is hook + body + cta joined into one continuous block with
 
 ---
 
+TEASER SCRIPT (paired Short — 45 to 60 seconds):
+
+You must also write a self-contained teaser version of this story for a separate Short video.
+
+The teaser is a CLIFFHANGER — it stops at the highest-stakes moment before the resolution.
+It is NOT a trailer or summary. It retells the story from the start, builds momentum, then
+cuts off right before the reveal. The viewer must not know how it ends.
+
+Teaser rules:
+- Opens with a standalone hook — do not assume the viewer has seen the long video.
+- Retells the setup and the escalating tension in fresh wording (different from the long script).
+- Stops abruptly at the point of maximum suspense — right before the answer, the reveal, or the confrontation.
+- NEVER resolves the central conflict. Zero resolution.
+- Ends with exactly: "Watch the full story — link in bio."
+- Target 110–150 words (45–60 seconds at ~2.5 words per second).
+
+Provide 5 hook options for the teaser — same format rules as the main hooks above.
+These 5 options go in "teaser_script.hook_options". The teaser's own opening line should
+be the strongest of the five and must appear as the first sentence of "teaser_script.full_script".
+
+---
+
 OUTPUT FORMAT:
 Return ONLY the following JSON object. No markdown, no code fences, no text before or after. The JSON must be valid and parseable.
 
@@ -71,5 +93,16 @@ Return ONLY the following JSON object. No markdown, no code fences, no text befo
     "<hook option 5 — under 15 words>"
   ],
   "word_count": <integer — count of words in the narration field>,
-  "estimated_duration_seconds": <integer — word_count divided by 2.5, rounded to nearest integer>
+  "estimated_duration_seconds": <integer — word_count divided by 2.5, rounded to nearest integer>,
+  "teaser_script": {
+    "full_script": "<45–60s cliffhanger retelling — first person, builds suspense, stops before resolution, ends with 'Watch the full story — link in bio.'>",
+    "word_count": <integer — words in full_script, target 110-150>,
+    "hook_options": [
+      "<teaser hook option 1 — under 15 words, different angle from main hooks>",
+      "<teaser hook option 2 — under 15 words>",
+      "<teaser hook option 3 — under 15 words>",
+      "<teaser hook option 4 — under 15 words>",
+      "<teaser hook option 5 — under 15 words>"
+    ]
+  }
 }

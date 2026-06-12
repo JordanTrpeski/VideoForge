@@ -97,10 +97,19 @@
 
 <!-- ===== Sidebar ===== -->
 <aside class="sidebar fixed top-0 left-0 h-full w-56 flex flex-col z-20">
-    <!-- Logo -->
+    <!-- Logo + channel switcher -->
     <div class="px-4 py-4 border-b" style="border-color: var(--border)">
         <div class="text-blue-400 font-bold text-sm leading-tight">VideoForge</div>
-        <div class="text-xs mt-0.5" style="color: var(--muted)">The Engineering Brief</div>
+        <form method="POST" action="/set-channel" class="mt-1.5">
+            <select name="channel" onchange="this.form.submit()"
+                    class="w-full text-xs rounded px-1.5 py-1 border"
+                    style="background:var(--surface-2);border-color:var(--border);color:var(--muted)">
+                <option value="all" {% if selected_channel == 'all' %}selected{% endif %}>All channels</option>
+                {% for ch in all_channels %}
+                <option value="{{ ch.id }}" {% if selected_channel == ch.id %}selected{% endif %}>{{ ch.name }}</option>
+                {% endfor %}
+            </select>
+        </form>
     </div>
 
     <!-- Nav -->

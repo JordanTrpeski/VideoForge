@@ -52,19 +52,29 @@ _scheduler: BackgroundScheduler | None = None
 # Config loader
 # ---------------------------------------------------------------------------
 
-def _load_config() -> dict:
+def _load_config(channel_slug: str = None) -> dict:
     """
-    Load config.json from the project root.
+    Load the merged config for a channel (or the global default).
+
+    Falls back to raw config.json if the config_loader is unavailable.
+
+    Args:
+        channel_slug (str): Channel identifier. Uses default_channel when None.
 
     Returns:
-        dict: Parsed configuration dictionary, or empty dict on failure.
+        dict: Merged configuration dictionary, or empty dict on failure.
     """
     try:
-        with open('config.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as exc:
-        logger.error(f"Failed to load config.json: {exc}")
-        return {}
+        from utils.config_loader import load_channel_config, get_default_channel
+        slug = channel_slug or get_default_channel()
+        return load_channel_config(slug)
+    except Exception:
+        try:
+            with open('config.json', 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as exc:
+            logger.error(f"Failed to load config.json: {exc}")
+            return {}
 
 
 # ---------------------------------------------------------------------------
@@ -194,18 +204,22 @@ def run_pipeline_sync(job_id: str, config: dict) -> bool:
 # Batch runner
 # ---------------------------------------------------------------------------
 
-def run_batch(count: int | None = None) -> dict:
+def run_batch(count: int | None = None, channel_id: str | None = None) -> dict:
     """
     Pick the oldest N queued jobs and run the full pipeline for each in sequence.
     N comes from config.posting.batch_size_per_week unless overridden by count.
 
+    Each job is run with the config merged for its own channel, so voice ID,
+    prompt files, and asset dirs are channel-specific.
+
     Called by:
-      - APScheduler every Sunday 22:00
-      - main.py `batch --count N` CLI command
+      - APScheduler per-channel cron (Sunday 22:00 per channel posting times)
+      - main.py `batch --count N --channel slug` CLI command
 
     Args:
-        count (int | None): Number of jobs to process.
-                            None → use config value.
+        count (int | None):      Number of jobs to process. None → use config value.
+        channel_id (str | None): Restrict batch to jobs on this channel.
+                                 None → process all channels (FIFO order).
 
     Returns:
         dict: {
@@ -218,19 +232,24 @@ def run_batch(count: int | None = None) -> dict:
     from database import init_db, get_all_jobs
 
     logger.info("=" * 60)
-    logger.info("BATCH RUN STARTING")
+    label = f"BATCH RUN STARTING — channel: {channel_id or 'all'}"
+    logger.info(label)
     logger.info("=" * 60)
 
     init_db()
-    config = _load_config()
+    global_config = _load_config()
 
     if count is None:
-        count = config.get('posting', {}).get('batch_size_per_week', 5)
+        if channel_id:
+            ch_config = _load_config(channel_slug=channel_id)
+            count = ch_config.get('posting', {}).get('batch_size_per_week', 5)
+        else:
+            count = global_config.get('posting', {}).get('batch_size_per_week', 5)
 
     logger.info(f"BATCH: Requested {count} jobs")
 
     # get_all_jobs returns newest-first; reverse for FIFO (oldest job first)
-    all_queued = list(reversed(get_all_jobs(status_filter='queued')))
+    all_queued = list(reversed(get_all_jobs(status_filter='queued', channel_id=channel_id)))
     to_run = all_queued[:count]
 
     if not to_run:
@@ -248,12 +267,16 @@ def run_batch(count: int | None = None) -> dict:
 
     for i, job in enumerate(to_run, 1):
         job_id = job['id']
+        job_channel = job.get('channel_id') or 'engineering_brief'
         logger.info(
-            f"BATCH: [{i}/{len(to_run)}] Starting job {job_id} — '{job['topic']}'"
+            f"BATCH: [{i}/{len(to_run)}] Starting job {job_id} "
+            f"— '{job['topic']}' (channel: {job_channel})"
         )
         t0 = time.time()
 
-        ok = run_pipeline_sync(job_id, config)
+        # Load channel-specific config fresh per job (hot-reload safe)
+        job_config = _load_config(channel_slug=job_channel)
+        ok = run_pipeline_sync(job_id, job_config)
         elapsed = round(time.time() - t0, 1)
 
         if ok:
@@ -330,6 +353,61 @@ def run_comment_mining() -> None:
         )
     except Exception as exc:
         logger.error(f"SCHEDULER: Comment mining failed: {exc}", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Scheduled upload runner — Reddit story teasers (dual output)
+# ---------------------------------------------------------------------------
+
+def run_scheduled_uploads() -> None:
+    """
+    Pick up teaser jobs whose scheduled_upload_at time has passed and upload them.
+
+    Called every 15 minutes by APScheduler.  Each eligible job (status =
+    'scheduled_upload', scheduled_upload_at <= now) is uploaded in its own
+    background thread using the per-channel config.  No more than one job is
+    started per invocation to avoid concurrent upload collisions.
+    """
+    import threading
+
+    logger.info("SCHEDULER: Checking for scheduled uploads")
+    try:
+        from database import init_db, get_scheduled_upload_jobs
+        init_db()
+        pending = get_scheduled_upload_jobs()
+
+        if not pending:
+            logger.debug("SCHEDULER: No scheduled uploads due — nothing to do")
+            return
+
+        logger.info(f"SCHEDULER: {len(pending)} scheduled upload(s) due")
+        for job in pending:
+            job_id     = job['id']
+            job_ch     = job.get('channel_id', 'engineering_brief')
+            job_config = _load_config(channel_slug=job_ch)
+
+            # Import here so scheduler.py has no hard import on app.py
+            from database import update_job_status
+            update_job_status(job_id, 'uploading')
+
+            def _upload(jid=job_id, cfg=job_config):
+                try:
+                    from modules.upload_engine import upload_video
+                    result = upload_video(job_id=jid, config=cfg)
+                    logger.info(
+                        f"[JOB {jid}] Scheduled upload result: "
+                        f"youtube={result.get('youtube', {}).get('success')}, "
+                        f"tiktok={result.get('tiktok', {}).get('success')}"
+                    )
+                except Exception as exc:
+                    logger.error(f"[JOB {jid}] Scheduled upload failed: {exc}", exc_info=True)
+                    update_job_status(jid, 'failed', error_module='upload_engine', error_message=str(exc))
+
+            threading.Thread(target=_upload, daemon=True).start()
+            logger.info(f"[JOB {job_id}] Scheduled upload thread started")
+
+    except Exception as exc:
+        logger.error(f"SCHEDULER: run_scheduled_uploads error: {exc}", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -436,9 +514,9 @@ def start_scheduler() -> BackgroundScheduler:
     Start the APScheduler BackgroundScheduler with VideoForge job schedules.
     Safe to call multiple times — returns the running instance if already started.
 
-    Schedules added:
-      - weekly_batch     : Sunday 22:00 <timezone> → run_batch()
-      - weekly_analytics : Monday 06:00 <timezone> → run_analytics()
+    For each active channel, registers a per-channel batch job using the
+    channel's posting times and timezone. Non-batch schedules (analytics,
+    comment mining, calendar fill) use the global config timezone.
 
     Returns:
         BackgroundScheduler: The live scheduler instance.
@@ -449,36 +527,54 @@ def start_scheduler() -> BackgroundScheduler:
         logger.debug("Scheduler already running — returning existing instance")
         return _scheduler
 
-    config   = _load_config()
-    timezone = config.get('posting', {}).get('timezone', 'Europe/Skopje')
+    global_config = _load_config()
+    timezone = global_config.get('posting', {}).get('timezone', 'Europe/Skopje')
 
     try:
         _scheduler = BackgroundScheduler(timezone=timezone)
     except Exception:
-        # Fallback if timezone string is unrecognised
         logger.warning(f"Unknown timezone '{timezone}' — falling back to UTC")
         _scheduler = BackgroundScheduler(timezone='UTC')
 
-    # Sunday 22:00 — weekly production batch
-    _scheduler.add_job(
-        func=run_batch,
-        trigger=CronTrigger(
-            day_of_week='sun', hour=22, minute=0, timezone=timezone
-        ),
-        id='weekly_batch',
-        name='Weekly batch production run (Sunday 22:00)',
-        replace_existing=True,
-        misfire_grace_time=3600,      # run even if app was offline at 22:00
-        coalesce=True,                # collapse multiple missed fires into one
-    )
-    logger.info(f"Scheduled: weekly_batch — Sunday 22:00 {timezone}")
+    # -----------------------------------------------------------------------
+    # Per-channel batch jobs
+    # -----------------------------------------------------------------------
+    try:
+        from database import get_channels
+        channels = get_channels(active_only=True)
+    except Exception as exc:
+        logger.warning(f"Could not load channels from DB — using single default batch: {exc}")
+        channels = [{'id': 'engineering_brief', 'name': 'The Engineering Brief'}]
+
+    for ch in channels:
+        ch_slug = ch['id']
+        try:
+            ch_config = _load_config(channel_slug=ch_slug)
+        except Exception:
+            ch_config = global_config
+
+        ch_tz = ch_config.get('posting', {}).get('timezone', timezone)
+        # Batch runs Sunday 22:00 in the channel's timezone
+        _scheduler.add_job(
+            func=run_batch,
+            kwargs={'channel_id': ch_slug},
+            trigger=CronTrigger(day_of_week='sun', hour=22, minute=0, timezone=ch_tz),
+            id=f'weekly_batch_{ch_slug}',
+            name=f'Weekly batch — {ch["name"]} (Sunday 22:00 {ch_tz})',
+            replace_existing=True,
+            misfire_grace_time=3600,
+            coalesce=True,
+        )
+        logger.info(f"Scheduled: weekly_batch_{ch_slug} — Sunday 22:00 {ch_tz}")
+
+    # -----------------------------------------------------------------------
+    # Global schedules (not per-channel)
+    # -----------------------------------------------------------------------
 
     # Monday 06:00 — analytics pull
     _scheduler.add_job(
         func=run_analytics,
-        trigger=CronTrigger(
-            day_of_week='mon', hour=6, minute=0, timezone=timezone
-        ),
+        trigger=CronTrigger(day_of_week='mon', hour=6, minute=0, timezone=timezone),
         id='weekly_analytics',
         name='Weekly analytics pull (Monday 06:00)',
         replace_existing=True,
@@ -490,9 +586,7 @@ def start_scheduler() -> BackgroundScheduler:
     # Monday 09:00 — comment mining (11.v2.C)
     _scheduler.add_job(
         func=run_comment_mining,
-        trigger=CronTrigger(
-            day_of_week='mon', hour=9, minute=0, timezone=timezone
-        ),
+        trigger=CronTrigger(day_of_week='mon', hour=9, minute=0, timezone=timezone),
         id='weekly_comment_mining',
         name='Weekly comment mining (Monday 09:00)',
         replace_existing=True,
@@ -504,9 +598,7 @@ def start_scheduler() -> BackgroundScheduler:
     # Sunday 09:00 — auto-fill weekly calendar (11.v2.D)
     _scheduler.add_job(
         func=run_auto_fill_calendar,
-        trigger=CronTrigger(
-            day_of_week='sun', hour=9, minute=0, timezone=timezone
-        ),
+        trigger=CronTrigger(day_of_week='sun', hour=9, minute=0, timezone=timezone),
         id='weekly_calendar_fill',
         name='Weekly calendar auto-fill (Sunday 09:00)',
         replace_existing=True,
@@ -514,6 +606,19 @@ def start_scheduler() -> BackgroundScheduler:
         coalesce=True,
     )
     logger.info(f"Scheduled: weekly_calendar_fill — Sunday 09:00 {timezone}")
+
+    # Every 15 minutes — scheduled uploads (Reddit story teasers)
+    from apscheduler.triggers.interval import IntervalTrigger
+    _scheduler.add_job(
+        func=run_scheduled_uploads,
+        trigger=IntervalTrigger(minutes=15),
+        id='scheduled_uploads_check',
+        name='Scheduled uploads check (every 15 min)',
+        replace_existing=True,
+        misfire_grace_time=300,
+        coalesce=True,
+    )
+    logger.info("Scheduled: scheduled_uploads_check — every 15 minutes")
 
     _scheduler.start()
     logger.info("APScheduler started successfully")

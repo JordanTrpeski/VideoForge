@@ -30,7 +30,7 @@ from pathlib import Path
 # 2. Third-party libraries
 from dotenv import load_dotenv
 from flask import (Flask, flash, jsonify, redirect, render_template,
-                   request, send_from_directory, url_for)
+                   request, send_from_directory, session, url_for)
 
 load_dotenv()
 
@@ -38,8 +38,11 @@ load_dotenv()
 sys.path.insert(0, str(Path(__file__).parent))
 
 # 3. Local modules
-from database import (create_job, get_all_jobs, get_job, get_next_job_id,
-                      init_db, update_job_field, update_job_status)
+from database import (create_job, get_all_jobs, get_channels, get_job,
+                      get_next_job_id, init_db, update_job_field, update_job_status,
+                      insert_manual_analytics, get_latest_analytics_per_job,
+                      get_all_analytics_for_job, get_linked_job)
+from utils.config_loader import get_default_channel, load_channel_config
 from utils.logger import setup_logger
 from webhook import webhook_bp
 
@@ -106,6 +109,29 @@ def _parse_alert_angles(alerts: list) -> list:
 
 # Register the webhook blueprint (provides /webhook/new-topic)
 app.register_blueprint(webhook_bp)
+
+
+# ---------------------------------------------------------------------------
+# Channel switcher — session-based selection persisted across requests
+# ---------------------------------------------------------------------------
+
+@app.context_processor
+def _inject_channel_context():
+    """Inject all_channels and selected_channel into every template."""
+    try:
+        all_channels = get_channels(active_only=True)
+    except Exception:
+        all_channels = []
+    selected = session.get('selected_channel', 'all')
+    return {'all_channels': all_channels, 'selected_channel': selected}
+
+
+@app.route('/set-channel', methods=['POST'])
+def set_channel():
+    """Persist the selected channel in the browser session and redirect back."""
+    slug = request.form.get('channel', 'all')
+    session['selected_channel'] = slug
+    return redirect(request.referrer or url_for('index'))
 
 # ---------------------------------------------------------------------------
 # Pipeline state  (shared across threads)
@@ -252,8 +278,53 @@ def _run_pipeline_thread(job_id: str, config: dict,
             _pipeline_state['error'] = str(exc)
 
 
+def _inject_long_url_into_teaser(short_job_id: str, long_youtube_url: str) -> None:
+    """
+    Append the long video's YouTube URL to the teaser's metadata description.
+    Called after the long job finishes uploading, before the teaser is scheduled.
+    """
+    import json as _json
+    short_job = get_job(short_job_id)
+    if not short_job:
+        return
+    meta_path = short_job.get('metadata_path')
+    if not meta_path or not Path(meta_path).exists():
+        logger.warning(
+            f"[JOB {short_job_id}] Teaser metadata not found at '{meta_path}' "
+            "— long URL will not be injected"
+        )
+        return
+    try:
+        with open(meta_path, 'r', encoding='utf-8') as f:
+            meta = _json.load(f)
+        desc = meta.get('youtube_description') or ''
+        if long_youtube_url not in desc:
+            meta['youtube_description'] = (
+                f"{desc}\n\nWatch the full story: {long_youtube_url}".strip()
+            )
+        with open(meta_path, 'w', encoding='utf-8') as f:
+            _json.dump(meta, f, indent=2, ensure_ascii=False)
+        logger.info(
+            f"[JOB {short_job_id}] Long video URL injected into teaser description: "
+            f"{long_youtube_url}"
+        )
+    except Exception as exc:
+        logger.error(
+            f"[JOB {short_job_id}] Failed to inject long URL into teaser: {exc}",
+            exc_info=True,
+        )
+
+
 def _run_upload_thread(job_id: str, config: dict) -> None:
-    """Run upload_engine in a background thread after Approve."""
+    """
+    Run upload_engine in a background thread after Approve.
+
+    If this is a story long-form job (story_role='long'), after a successful
+    YouTube upload the linked teaser's description is updated with the long
+    video URL and the teaser is scheduled for upload >= 24 hours later.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+
     logger.info(f"[JOB {job_id}] Upload thread started")
     with _pipeline_lock:
         _pipeline_state['running'] = True
@@ -263,8 +334,37 @@ def _run_upload_thread(job_id: str, config: dict) -> None:
         update_job_status(job_id, 'uploading')
         from modules.upload_engine import upload_video
         result = upload_video(job_id=job_id, config=config)
-        logger.info(f"[JOB {job_id}] Upload result: youtube={result.get('youtube',{}).get('success')}, "
-                    f"tiktok={result.get('tiktok',{}).get('success')}")
+        logger.info(
+            f"[JOB {job_id}] Upload result: "
+            f"youtube={result.get('youtube', {}).get('success')}, "
+            f"tiktok={result.get('tiktok', {}).get('success')}"
+        )
+
+        # Story pair: after long upload succeeds, schedule the teaser
+        job = get_job(job_id)
+        if (
+            job
+            and job.get('story_role') == 'long'
+            and job.get('linked_job_id')
+            and result.get('youtube', {}).get('success')
+        ):
+            short_job_id   = job['linked_job_id']
+            long_yt_url    = job.get('youtube_url') or ''
+            short_job      = get_job(short_job_id)
+
+            if short_job and short_job.get('status') == 'review':
+                if long_yt_url:
+                    _inject_long_url_into_teaser(short_job_id, long_yt_url)
+
+                scheduled_at = (
+                    _dt.utcnow() + _td(hours=24)
+                ).strftime('%Y-%m-%d %H:%M:%S')
+                update_job_field(short_job_id, 'scheduled_upload_at', scheduled_at)
+                update_job_status(short_job_id, 'scheduled_upload')
+                logger.info(
+                    f"[JOB {short_job_id}] Teaser scheduled for upload at {scheduled_at} UTC"
+                )
+
     except Exception as exc:
         logger.error(f"[JOB {job_id}] Upload thread error: {exc}", exc_info=True)
         update_job_status(job_id, 'failed', error_module='upload_engine', error_message=str(exc))
@@ -277,12 +377,22 @@ def _run_upload_thread(job_id: str, config: dict) -> None:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _load_config() -> dict:
+def _load_config(channel_slug: str = None) -> dict:
+    """
+    Return the merged config for the given channel, or for the default channel
+    when channel_slug is None. Falls back to raw global config on any error.
+    """
     try:
-        with open('config.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
+        slug = channel_slug or session.get('selected_channel') or get_default_channel()
+        if slug == 'all':
+            slug = get_default_channel()
+        return load_channel_config(slug)
     except Exception:
-        return {}
+        try:
+            with open('config.json', 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {}
 
 
 def _read_log_lines(module: str = 'main', level: str = 'ALL',
@@ -331,8 +441,10 @@ def _read_log_lines(module: str = 'main', level: str = 'ALL',
     return list(reversed(parsed[-limit:]))
 
 
-def _get_stats() -> dict:
-    jobs = get_all_jobs()
+def _get_stats(channel_id: str = None) -> dict:
+    selected = channel_id or session.get('selected_channel', 'all')
+    filter_ch = None if selected == 'all' else selected
+    jobs = get_all_jobs(channel_id=filter_ch)
     today = datetime.now()
     monday = (today - timedelta(days=today.weekday())).strftime('%Y-%m-%d')
     return {
@@ -472,8 +584,10 @@ app.jinja_env.globals['status_color'] = _status_color
 @app.route('/')
 def overview():
     from database import get_active_alerts
+    selected = session.get('selected_channel', 'all')
+    filter_ch = None if selected == 'all' else selected
     stats = _get_stats()
-    jobs = get_all_jobs()
+    jobs = get_all_jobs(channel_id=filter_ch)
     review_jobs = [j for j in jobs if j.get('status') == 'review']
     with _pipeline_lock:
         pipeline_running = _pipeline_state.get('running', False)
@@ -490,7 +604,9 @@ def overview():
 @app.route('/jobs')
 def jobs_list():
     status_filter = request.args.get('status', 'all')
-    all_jobs = get_all_jobs()
+    selected = session.get('selected_channel', 'all')
+    filter_ch = None if selected == 'all' else selected
+    all_jobs = get_all_jobs(channel_id=filter_ch)
     filtered = [j for j in all_jobs if j.get('status') == status_filter] \
                if status_filter != 'all' else all_jobs
     counts: dict = {}
@@ -526,12 +642,15 @@ def new_job():
             return redirect(url_for('new_job'))
 
         init_db()
+        selected = session.get('selected_channel', 'all')
+        job_channel = get_default_channel() if selected == 'all' else selected
         created_ids = []
         for t in topics:
             jid = get_next_job_id()
-            create_job(job_id=jid, topic=t, bucket=bucket, hook_style=hook)
+            create_job(job_id=jid, topic=t, bucket=bucket, hook_style=hook,
+                       channel_id=job_channel)
             created_ids.append(jid)
-            logger.info(f"[JOB {jid}] Created via dashboard — topic: '{t}'")
+            logger.info(f"[JOB {jid}] Created via dashboard — topic: '{t}', channel: {job_channel}")
 
         if run_mode == 'now' and len(created_ids) == 1:
             jid = created_ids[0]
@@ -588,12 +707,41 @@ def job_detail(job_id):
     elif job.get('raw_video_path') and Path(job['raw_video_path']).exists():
         video_url = f'/output/videos/{job_id}_raw.mp4'
 
+    # Primary thumbnail URL (chosen variant or fallback)
     thumbnail_url = None
     if job.get('thumbnail_path') and Path(job['thumbnail_path']).exists():
         thumbnail_url = f'/output/thumbnails/{job_id}.jpg'
 
+    # Detect text_template variants
+    thumbnail_variants = []
+    for v in [1, 2]:
+        vp = Path(f'output/thumbnails/{job_id}_v{v}.jpg')
+        if vp.exists():
+            thumbnail_variants.append({'index': v, 'url': f'/output/thumbnails/{job_id}_v{v}.jpg'})
+    chosen_variant = job.get('thumbnail_variant') or (1 if thumbnail_variants else 0)
+
     log_lines = _read_log_lines(module='main', level='ALL',
                                 job_filter=job_id, limit=150)
+
+    # Load the linked teaser/long job for story-pair review UI
+    linked_job = get_linked_job(job_id) if job.get('linked_job_id') else None
+    linked_script_data = None
+    linked_video_url   = None
+    if linked_job:
+        lsp = linked_job.get('script_path')
+        if lsp and Path(lsp).exists():
+            try:
+                with open(lsp, 'r', encoding='utf-8') as f:
+                    linked_script_data = json.load(f)
+            except Exception:
+                pass
+        lfp = linked_job.get('final_video_path')
+        lrp = linked_job.get('raw_video_path')
+        lid = linked_job['id']
+        if lfp and Path(lfp).exists():
+            linked_video_url = f'/output/videos/{lid}_captioned.mp4'
+        elif lrp and Path(lrp).exists():
+            linked_video_url = f'/output/videos/{lid}_raw.mp4'
 
     return render_template('job_detail.html',
                            job=job,
@@ -602,7 +750,26 @@ def job_detail(job_id):
                            log_lines=log_lines,
                            video_url=video_url,
                            thumbnail_url=thumbnail_url,
+                           thumbnail_variants=thumbnail_variants,
+                           chosen_variant=chosen_variant,
+                           linked_job=linked_job,
+                           linked_script_data=linked_script_data,
+                           linked_video_url=linked_video_url,
                            active='jobs')
+
+
+@app.route('/jobs/<job_id>/set-thumbnail-variant', methods=['POST'])
+def set_thumbnail_variant(job_id):
+    """Store the owner's chosen thumbnail variant (1 or 2) for this job."""
+    job = get_job(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    variant = request.json.get('variant', 1) if request.is_json else int(request.form.get('variant', 1))
+    try:
+        update_job_field(job_id, 'thumbnail_variant', int(variant))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+    return jsonify({'ok': True, 'variant': variant})
 
 
 @app.route('/jobs/<job_id>/approve', methods=['POST'])
@@ -611,7 +778,33 @@ def approve_job(job_id):
     if not job:
         flash('Job not found.', 'error')
         return redirect(url_for('overview'))
-    config = _load_config()
+
+    # Disclosure checklist gate — if YouTube rejected containsSyntheticMedia,
+    # the owner must confirm they've set it manually in Studio before we mark posted.
+    if job.get('disclosure_checklist_required') and not request.form.get('disclosure_acknowledged'):
+        flash(
+            'Please check the disclosure checkbox confirming you have set '
+            '"Contains synthetic/AI content" in YouTube Studio before approving.',
+            'error',
+        )
+        return redirect(url_for('job_detail', job_id=job_id))
+
+    config = _load_config(channel_slug=job.get('channel_id'))
+
+    # Story pair: if this is the long-form job, also put the teaser in review
+    # so _run_upload_thread can pick it up once the long upload has a YouTube URL.
+    # If the teaser is somehow not at review yet, approve the long alone — the
+    # teaser will be scheduled when its pipeline finishes and reaches review.
+    linked_job = get_linked_job(job_id) if job.get('linked_job_id') else None
+    if linked_job and linked_job.get('story_role') == 'short':
+        if linked_job.get('status') not in ('review', 'scheduled_upload', 'uploading', 'posted'):
+            flash(
+                f'Teaser job {linked_job["id"]} is still processing '
+                f'({linked_job["status"]}) — approving long video only. '
+                'The teaser will be scheduled automatically after it finishes.',
+                'warning',
+            )
+
     threading.Thread(
         target=_run_upload_thread,
         args=(job_id, config),
@@ -811,12 +1004,66 @@ def use_hook(job_id):
     update_job_field(job_id, 'word_count', word_count)
     update_job_status(job_id, 'queued', error_module=None, error_message=None)
 
-    config = _load_config()
+    config = _load_config(channel_slug=job.get('channel_id'))
     threading.Thread(
         target=_run_pipeline_thread,
         args=(job_id, config, 'generate-voice'),
         daemon=True,
     ).start()
+
+    # Story pair: if there is a linked teaser also awaiting hook selection,
+    # apply the teaser hook and start its pipeline too.
+    linked_job = get_linked_job(job_id) if job.get('linked_job_id') else None
+    if linked_job and linked_job.get('story_role') == 'short' and linked_job.get('status') == 'script_done':
+        import json as _json2
+        short_id     = linked_job['id']
+        short_path   = linked_job.get('script_path') or f'output/scripts/{short_id}.json'
+        teaser_idx   = request.form.get('teaser_hook_index', '')
+        teaser_text  = (request.form.get('teaser_hook_text') or '').strip()
+
+        try:
+            with open(short_path, 'r', encoding='utf-8') as f:
+                short_script = _json2.load(f)
+
+            short_hooks   = short_script.get('hooks', []) or []
+            chosen_teaser = teaser_text
+            if not chosen_teaser and teaser_idx.isdigit():
+                idx = int(teaser_idx)
+                if 0 <= idx < len(short_hooks):
+                    chosen_teaser = str(short_hooks[idx]).strip()
+            if not chosen_teaser and short_hooks:
+                chosen_teaser = str(short_hooks[0]).strip()
+
+            if chosen_teaser:
+                sections = short_script.setdefault('sections', {})
+                sections['hook'] = chosen_teaser
+                body  = sections.get('body', '')
+                cta   = sections.get('cta', 'Watch the full story — link in bio.')
+                short_narration = ' '.join(p for p in (chosen_teaser, body, cta) if p).strip()
+                short_script['narration']  = short_narration
+                short_wc = len(short_narration.split())
+                short_script['word_count'] = short_wc
+                short_script['estimated_duration_seconds'] = round(short_wc / 2.5)
+                short_script['selected_hook'] = chosen_teaser
+
+                with open(short_path, 'w', encoding='utf-8') as f:
+                    _json2.dump(short_script, f, indent=2, ensure_ascii=False)
+
+                update_job_field(short_id, 'word_count', short_wc)
+
+            update_job_status(short_id, 'queued', error_module=None, error_message=None)
+            short_config = _load_config(channel_slug=linked_job.get('channel_id'))
+            threading.Thread(
+                target=_run_pipeline_thread,
+                args=(short_id, short_config, 'generate-voice'),
+                daemon=True,
+            ).start()
+            logger.info(f"[JOB {short_id}] Teaser pipeline started from voice (linked to {job_id})")
+
+        except Exception as exc:
+            logger.error(
+                f"[JOB {short_id}] Failed to start teaser pipeline: {exc}", exc_info=True
+            )
 
     logger.info(f"[JOB {job_id}] Hook selected — continuing pipeline from voice")
     flash(f'Hook selected — job {job_id} continuing through voice, assembly and captions.', 'success')
@@ -1124,9 +1371,11 @@ def api_analytics():
         ).fetchone()[0]
 
         top_rows = conn.execute("""
-            SELECT j.id, j.topic, j.bucket,
+            SELECT j.id, j.topic, j.bucket, j.channel_id,
                    COALESCE(SUM(a.views),0)  AS total_views,
                    COALESCE(SUM(a.likes),0)  AS total_likes,
+                   AVG(a.avg_view_percentage) AS avg_retention_pct,
+                   AVG(a.ctr)                 AS avg_ctr,
                    j.youtube_url, j.tiktok_url
             FROM jobs j
             LEFT JOIN analytics a ON j.id = a.job_id
@@ -1345,7 +1594,9 @@ def api_refresh_analytics():
     """Manually trigger an analytics pull for all posted jobs."""
     try:
         from modules.analytics_engine import pull_all_analytics
-        summary = pull_all_analytics()
+        selected = session.get('selected_channel', 'all')
+        ch_filter = None if selected == 'all' else selected
+        summary = pull_all_analytics(channel_id=ch_filter)
         return jsonify({
             'message':        'Analytics pull complete',
             'jobs_processed':  summary['jobs_processed'],
@@ -1355,6 +1606,342 @@ def api_refresh_analytics():
         })
     except Exception as exc:
         logger.error(f"api_refresh_analytics error: {exc}", exc_info=True)
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/analytics/manual', methods=['POST'])
+def api_analytics_manual():
+    """
+    Store a manual CTR/impressions entry for a posted video.
+
+    JSON body:
+      job_id            str   required
+      impressions       int   required
+      ctr               float required  (0.03 = 3%)
+      avg_view_pct      float optional  (0-100)
+      avg_view_duration float optional  (seconds)
+      views             int   optional
+      likes             int   optional
+      platform          str   optional  default 'youtube'
+    """
+    try:
+        body      = request.get_json(force=True)
+        job_id    = body.get('job_id', '').strip()
+        platform  = body.get('platform', 'youtube')
+
+        if not job_id:
+            return jsonify({'error': 'job_id is required'}), 400
+
+        job = get_job(job_id)
+        if not job:
+            return jsonify({'error': f'Job {job_id} not found'}), 404
+
+        channel_id = job.get('channel_id', 'engineering_brief')
+
+        impressions = body.get('impressions')
+        ctr         = body.get('ctr')
+
+        if impressions is None or ctr is None:
+            return jsonify({'error': 'impressions and ctr are required'}), 400
+
+        insert_manual_analytics(
+            job_id=job_id,
+            platform=platform,
+            impressions=int(impressions),
+            ctr=float(ctr),
+            avg_view_percentage=body.get('avg_view_pct'),
+            avg_view_duration=body.get('avg_view_duration'),
+            views=body.get('views'),
+            likes=body.get('likes'),
+            channel_id=channel_id,
+            data_source='manual',
+        )
+        logger.info(
+            f"Manual analytics entry stored — job: {job_id}, "
+            f"impressions: {impressions}, ctr: {ctr}"
+        )
+        return jsonify({'success': True, 'job_id': job_id})
+
+    except Exception as exc:
+        logger.error(f"api_analytics_manual error: {exc}", exc_info=True)
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/analytics/csv-import', methods=['POST'])
+def api_analytics_csv_import():
+    """
+    Import CTR and impressions from a YouTube Studio Content CSV export.
+
+    Accepts multipart/form-data with a 'file' field containing the CSV.
+
+    Expected CSV columns (YouTube Studio format):
+      Video title, Video publish time, Views, Watch time (hours),
+      Subscribers, Impressions, Impressions click-through rate (%),
+      Average view duration, Average percentage viewed (%)
+
+    Matching is done by job topic substring against video title.
+    Each matched row is inserted as a new 'csv' data_source snapshot.
+    """
+    import csv
+    import io
+
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file in request — send multipart/form-data with field "file"'}), 400
+
+        raw_bytes = request.files['file'].read()
+        text      = raw_bytes.decode('utf-8-sig')  # handle BOM
+        reader    = csv.DictReader(io.StringIO(text))
+
+        rows_imported = 0
+        rows_skipped  = 0
+        errors_list   = []
+
+        posted_jobs = get_all_jobs(status_filter='posted')
+        topic_map   = {j['topic'].lower(): j for j in posted_jobs}
+
+        for row in reader:
+            title = (
+                row.get('Video title') or
+                row.get('Content') or
+                row.get('Video')
+                or ''
+            ).strip().lower()
+
+            if not title:
+                rows_skipped += 1
+                continue
+
+            # Find the best matching job
+            matched_job = None
+            for topic_lower, job in topic_map.items():
+                if topic_lower in title or title in topic_lower:
+                    matched_job = job
+                    break
+
+            if not matched_job:
+                rows_skipped += 1
+                continue
+
+            try:
+                def _parse_float(s):
+                    if s is None:
+                        return None
+                    cleaned = str(s).replace('%', '').replace(',', '').strip()
+                    return float(cleaned) if cleaned else None
+
+                def _parse_int(s):
+                    if s is None:
+                        return None
+                    cleaned = str(s).replace(',', '').strip()
+                    return int(float(cleaned)) if cleaned else None
+
+                impressions = _parse_int(row.get('Impressions'))
+                ctr_pct     = _parse_float(
+                    row.get('Impressions click-through rate (%)') or
+                    row.get('Impressions CTR (%)')
+                )
+                ctr         = (ctr_pct / 100.0) if ctr_pct is not None else None
+                avg_pct     = _parse_float(row.get('Average percentage viewed (%)'))
+                views       = _parse_int(row.get('Views'))
+
+                avg_dur_str = (row.get('Average view duration') or '').strip()
+                avg_dur = None
+                if avg_dur_str and ':' in avg_dur_str:
+                    parts = avg_dur_str.split(':')
+                    try:
+                        if len(parts) == 2:
+                            avg_dur = int(parts[0]) * 60 + int(parts[1])
+                        elif len(parts) == 3:
+                            avg_dur = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+                    except ValueError:
+                        avg_dur = None
+
+                if impressions is None and ctr is None:
+                    rows_skipped += 1
+                    continue
+
+                insert_manual_analytics(
+                    job_id=matched_job['id'],
+                    platform='youtube',
+                    impressions=impressions or 0,
+                    ctr=ctr or 0.0,
+                    avg_view_percentage=avg_pct,
+                    avg_view_duration=avg_dur,
+                    views=views,
+                    likes=None,
+                    channel_id=matched_job.get('channel_id', 'engineering_brief'),
+                    data_source='csv',
+                )
+                rows_imported += 1
+
+            except Exception as row_exc:
+                errors_list.append({'title': title, 'error': str(row_exc)})
+
+        logger.info(
+            f"CSV import complete — imported: {rows_imported}, "
+            f"skipped: {rows_skipped}, errors: {len(errors_list)}"
+        )
+        return jsonify({
+            'imported': rows_imported,
+            'skipped':  rows_skipped,
+            'errors':   errors_list,
+        })
+
+    except Exception as exc:
+        logger.error(f"api_analytics_csv_import error: {exc}", exc_info=True)
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/analytics/channel-health')
+def api_analytics_channel_health():
+    """
+    Return channel health summary card data for all active channels.
+
+    Response:
+      {
+        channels: [{
+          channel_id, channel_name,
+          videos_posted, days_since_first_upload,
+          avg_retention_pct, avg_ctr,
+          trend_vs_prev5_views,   # % change vs 5 videos before latest 5
+          latest_5_avg_views, prev_5_avg_views,
+        }]
+      }
+    """
+    try:
+        from database import get_connection
+
+        all_channels = get_channels(active_only=True)
+        results      = []
+
+        for ch in all_channels:
+            ch_id   = ch['id']
+            ch_name = ch['name']
+
+            conn = get_connection()
+            jobs = conn.execute("""
+                SELECT j.id, j.created_at,
+                       MAX(a.pulled_at) AS last_pull,
+                       MAX(a.views)     AS views,
+                       AVG(a.avg_view_percentage) AS avg_retention,
+                       AVG(a.ctr)                 AS avg_ctr
+                FROM jobs j
+                LEFT JOIN analytics a ON j.id = a.job_id AND a.platform = 'youtube'
+                WHERE j.status = 'posted' AND j.channel_id = ?
+                GROUP BY j.id
+                ORDER BY j.created_at ASC
+            """, (ch_id,)).fetchall()
+            conn.close()
+
+            if not jobs:
+                results.append({
+                    'channel_id':             ch_id,
+                    'channel_name':           ch_name,
+                    'videos_posted':          0,
+                    'days_since_first_upload': None,
+                    'avg_retention_pct':      None,
+                    'avg_ctr':                None,
+                    'latest_5_avg_views':     None,
+                    'prev_5_avg_views':       None,
+                    'trend_pct':              None,
+                })
+                continue
+
+            from datetime import datetime, timezone, timedelta
+
+            def _parse_dt(s):
+                if not s:
+                    return None
+                try:
+                    dt = datetime.fromisoformat(s)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt
+                except Exception:
+                    return None
+
+            first_dt = _parse_dt(jobs[0]['created_at'])
+            days_live = None
+            if first_dt:
+                days_live = round((datetime.now(timezone.utc) - first_dt).total_seconds() / 86400, 1)
+
+            all_views = [r['views'] or 0 for r in jobs]
+            ret_vals  = [r['avg_retention'] for r in jobs if r['avg_retention'] is not None]
+            ctr_vals  = [r['avg_ctr']       for r in jobs if r['avg_ctr']       is not None]
+
+            avg_ret = round(sum(ret_vals) / len(ret_vals), 1) if ret_vals else None
+            avg_ctr = round((sum(ctr_vals) / len(ctr_vals)) * 100, 2) if ctr_vals else None
+
+            latest5  = all_views[-5:] if len(all_views) >= 5 else all_views
+            prev5    = all_views[-10:-5] if len(all_views) >= 10 else (all_views[:-5] if len(all_views) > 5 else [])
+
+            l5_avg = round(sum(latest5) / len(latest5), 1) if latest5 else None
+            p5_avg = round(sum(prev5)   / len(prev5),   1) if prev5   else None
+
+            trend_pct = None
+            if l5_avg is not None and p5_avg and p5_avg > 0:
+                trend_pct = round(((l5_avg - p5_avg) / p5_avg) * 100, 1)
+
+            from database import get_archive_size_bytes
+            archive_info = get_archive_size_bytes(channel_id=ch_id)
+            archive_bytes = archive_info['channels'].get(ch_id, 0)
+
+            results.append({
+                'channel_id':              ch_id,
+                'channel_name':            ch_name,
+                'videos_posted':           len(jobs),
+                'days_since_first_upload': days_live,
+                'avg_retention_pct':       avg_ret,
+                'avg_ctr':                 avg_ctr,
+                'latest_5_avg_views':      l5_avg,
+                'prev_5_avg_views':        p5_avg,
+                'trend_pct':               trend_pct,
+                'archive_size_bytes':      archive_bytes,
+                'archive_size_gb':         round(archive_bytes / (1024 ** 3), 2),
+            })
+
+        return jsonify({'channels': results})
+
+    except Exception as exc:
+        logger.error(f"api_analytics_channel_health error: {exc}", exc_info=True)
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/analytics/kill-metrics')
+def api_analytics_kill_metrics():
+    """
+    Return kill-metrics verdict for all active channels.
+
+    Response:
+      {
+        verdicts: {
+          channel_id: {
+            verdict, rule_fired, checkpoint,
+            video_count, days_live, metrics
+          }
+        }
+      }
+    """
+    try:
+        from modules.kill_metrics import compute_all_channel_verdicts
+
+        all_channels = get_channels(active_only=True)
+        channel_ids  = [ch['id'] for ch in all_channels]
+
+        # Load kill_metrics config from global config
+        global_cfg = _load_config()
+        kill_cfg   = global_cfg.get('kill_metrics', {})
+
+        # Fetch latest analytics per job across all channels
+        jobs_with_analytics = get_latest_analytics_per_job(channel_id=None, platform='youtube')
+
+        verdicts = compute_all_channel_verdicts(channel_ids, jobs_with_analytics, kill_cfg)
+
+        return jsonify({'verdicts': verdicts})
+
+    except Exception as exc:
+        logger.error(f"api_analytics_kill_metrics error: {exc}", exc_info=True)
         return jsonify({'error': str(exc)}), 500
 
 
@@ -1505,7 +2092,10 @@ def fast_track_alert(alert_id):
     bucket = alert.get('bucket', 'elec')
     jid    = get_next_job_id()
 
-    create_job(job_id=jid, topic=topic, bucket=bucket, hook_style='shocking_fact')
+    selected = session.get('selected_channel', 'all')
+    job_channel = get_default_channel() if selected == 'all' else selected
+    create_job(job_id=jid, topic=topic, bucket=bucket, hook_style='shocking_fact',
+               channel_id=job_channel)
     link_alert_to_job(alert_id, jid)
 
     threading.Thread(
@@ -1617,11 +2207,14 @@ def research_topics_queue(topic_id):
         flash('Topic not found.', 'error')
         return redirect(url_for('research_topics'))
     jid = get_next_job_id()
+    selected = session.get('selected_channel', 'all')
+    job_channel = t.get('channel_id') or (get_default_channel() if selected == 'all' else selected)
     create_job(
         job_id=jid,
         topic=t['topic'],
         bucket=t.get('bucket') or 'elec',
         hook_style='shocking_fact',
+        channel_id=job_channel,
     )
     flash(f'Job {jid} added to queue from topic bank.', 'success')
     return redirect(url_for('research_topics'))
@@ -1646,6 +2239,8 @@ def approve_reddit_candidate(topic_id):
         return redirect(url_for('research_topics'))
 
     jid = get_next_job_id()
+    selected = session.get('selected_channel', 'all')
+    job_channel = t.get('channel_id') or (get_default_channel() if selected == 'all' else selected)
     create_job(
         job_id=jid,
         topic=t['topic'],
@@ -1654,11 +2249,12 @@ def approve_reddit_candidate(topic_id):
         mode='reddit',
         source='reddit',
         source_selftext=t.get('selftext') or '',
+        channel_id=job_channel,
     )
     update_topic_status(topic_id, 'queued')
     logger.info(f"[JOB {jid}] Created from Reddit candidate {topic_id} — running script stage")
 
-    config = _load_config()
+    config = _load_config(channel_slug=job_channel)
     threading.Thread(
         target=_run_pipeline_thread,
         args=(jid, config, 'generate-script'),

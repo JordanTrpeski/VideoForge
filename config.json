@@ -1,4 +1,5 @@
 {
+  "default_channel": "engineering_brief",
   "captions": {
     "color": "white",
     "font_file": "assets/fonts/Arial-Bold.ttf",
@@ -36,7 +37,12 @@
     "description_max_chars": 150,
     "hashtag_count": 10,
     "prompt_file": "prompts/metadata_prompt.txt",
-    "youtube_description_max_chars": 500
+    "youtube_description_max_chars": 500,
+    "description_skeletons": [
+      "Ever wondered {topic}? Most people have no idea.\n\n{youtube_description}\n\nFollow for weekly engineering secrets.\n\n#Shorts",
+      "{youtube_description}\n\n{topic} — the engineering nobody explains simply.\n\nFollow @HowThingsWorkEng for weekly breakdowns.\n\n#Shorts",
+      "Here's what school never taught you about {topic}.\n\n{youtube_description}\n\nMore real engineering every week — follow to not miss it.\n\n#Shorts"
+    ]
   },
   "pipeline": {
     "visual_mode": "images"
@@ -123,10 +129,26 @@
     "word_count_target": 175
   },
   "thumbnail": {
+    "mode": "frame_capture",
     "frame_capture_at_seconds": 5,
     "height": 1920,
     "overlay_template": "assets/thumbnail_template/overlay.png",
-    "width": 1080
+    "width": 1080,
+    "text_template": {
+      "output_width": 1280,
+      "output_height": 720,
+      "background_color": [15, 15, 25],
+      "text_color": [255, 255, 255],
+      "font_file": "assets/fonts/Arial-Bold.ttf",
+      "font_size": 110,
+      "stroke_color": [0, 0, 0],
+      "stroke_width": 5,
+      "frame_strip_height_pct": 0.28,
+      "variant_accents": [
+        [59, 130, 246],
+        [239, 68, 68]
+      ]
+    }
   },
   "video": {
     "bitrate": "8000k",
@@ -147,6 +169,21 @@
     "num_inference_steps": 30,
     "style_preset_id": "DYNAMIC",
     "width": 864
+  },
+  "kill_metrics": {
+    "minimum_impressions_for_verdict": 500,
+    "checkpoint_v15": {
+      "avg_ctr_warn": 0.03,
+      "avg_retention_warn_pct": 30.0
+    },
+    "checkpoint_v30": {
+      "breakout_views_threshold": 10000,
+      "avg_ctr_kill": 0.04
+    },
+    "checkpoint_d60": {
+      "yt_watch_hours_target": 4000,
+      "yt_watch_hours_days": 365
+    }
   },
   "variation": {
     "shorts": {

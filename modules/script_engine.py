@@ -29,7 +29,8 @@ import anthropic
 from dotenv import load_dotenv
 
 # 3. Local modules
-from database import create_job, update_job_status, update_job_field, get_job, get_next_job_id, get_last_job_variation
+from database import (create_job, update_job_status, update_job_field,
+                      get_job, get_next_job_id, get_last_job_variation)
 from utils.logger import setup_logger
 
 load_dotenv()
@@ -410,6 +411,111 @@ def _pick_variation(mode: str, config: dict, job_id: str) -> tuple:
     return picked_length, picked_hook
 
 
+def _create_teaser_job(
+    long_job_id: str,
+    script_data: dict,
+    topic: str,
+    story_id: str,
+) -> str | None:
+    """
+    Create the paired short (teaser) job from the teaser_script embedded in
+    the long job's Claude response.
+
+    Writes the teaser's script JSON to disk, inserts a DB row, and sets
+    story linking fields on the short job.  The long job's story fields are
+    set by the caller (generate_script) after this returns.
+
+    Args:
+        long_job_id (str):  The long-form job that owns this story.
+        script_data (dict): Full parsed Claude response with 'teaser_script'.
+        topic (str):        Original story topic for naming the teaser job.
+        story_id (str):     Shared identifier linking long + short jobs.
+
+    Returns:
+        str | None: The new short job's ID, or None if teaser data is absent.
+    """
+    teaser = script_data.get('teaser_script', {})
+    full_script = (teaser.get('full_script') or '').strip()
+    if not full_script:
+        logger.warning(
+            f"[JOB {long_job_id}] teaser_script missing or empty — skipping teaser job creation"
+        )
+        return None
+
+    hook_options = teaser.get('hook_options') or []
+    word_count   = teaser.get('word_count') or len(full_script.split())
+    short_job_id = get_next_job_id()
+
+    # Build the teaser's narration sections.
+    # The first hook_option (or first sentence of the script) is the opening hook.
+    opening = hook_options[0].strip() if hook_options else full_script.split('.')[0].strip()
+
+    teaser_script_json = {
+        'topic':    f"{topic} (Teaser)",
+        'bucket':   'reddit',
+        'hook_style': 'cliffhanger',
+        'sections': {
+            'hook': opening,
+            'body': full_script,
+            'cta':  'Watch the full story — link in bio.',
+        },
+        'narration':   full_script,
+        'hooks':       hook_options,
+        'word_count':  word_count,
+        'estimated_duration_seconds': round(word_count / 2.5),
+        'visual_brief': [],
+        'mode':       'reddit',
+        'story_role': 'short',
+        'story_id':   story_id,
+        'job_id':     short_job_id,
+        'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    }
+
+    # Write script to disk
+    output_dir = Path('output/scripts')
+    output_dir.mkdir(parents=True, exist_ok=True)
+    short_script_path = output_dir / f"{short_job_id}.json"
+    with open(short_script_path, 'w', encoding='utf-8') as f:
+        json.dump(teaser_script_json, f, indent=2, ensure_ascii=False)
+
+    file_size_mb = short_script_path.stat().st_size / (1024 * 1024)
+    logger.info(
+        f"[JOB {long_job_id}] Teaser script written: {short_script_path} "
+        f"({file_size_mb:.4f} MB, {word_count} words)"
+    )
+
+    # Fetch long job for channel + source text
+    long_job   = get_job(long_job_id)
+    channel_id = (long_job or {}).get('channel_id', 'engineering_brief')
+    source_selftext = (long_job or {}).get('source_selftext', '')
+
+    # Create the short job row
+    create_job(
+        job_id=short_job_id,
+        topic=f"{topic} (Teaser)",
+        bucket='reddit',
+        hook_style='cliffhanger',
+        mode='reddit',
+        source='reddit_teaser',
+        source_selftext=source_selftext,
+        channel_id=channel_id,
+    )
+
+    # Set story fields on the short job
+    update_job_field(short_job_id, 'story_id',    story_id)
+    update_job_field(short_job_id, 'story_role',  'short')
+    update_job_field(short_job_id, 'linked_job_id', long_job_id)
+    update_job_field(short_job_id, 'script_path', str(short_script_path))
+    update_job_field(short_job_id, 'word_count',  word_count)
+    update_job_status(short_job_id, 'script_done')
+
+    logger.info(
+        f"[JOB {long_job_id}] Teaser job {short_job_id} created "
+        f"(story_id={story_id}, ~{round(word_count/2.5)}s)"
+    )
+    return short_job_id
+
+
 def generate_script(
     job_id: str,
     topic: str,
@@ -570,6 +676,17 @@ def generate_script(
         if mode == 'reddit':
             update_job_status(job_id, 'script_done')
             logger.info(f"[JOB {job_id}] Reddit script ready — awaiting hook selection (status: script_done)")
+
+            # Create the paired teaser (short) job if Claude included teaser_script
+            teaser_job_id = None
+            if 'teaser_script' in script_data:
+                story_id      = f"story_{job_id}"
+                teaser_job_id = _create_teaser_job(job_id, script_data, topic, story_id)
+                if teaser_job_id:
+                    # Link story fields on the long job
+                    update_job_field(job_id, 'story_id',      story_id)
+                    update_job_field(job_id, 'story_role',    'long')
+                    update_job_field(job_id, 'linked_job_id', teaser_job_id)
         else:
             update_job_status(job_id, 'voiced')  # next stage is voice_engine
 

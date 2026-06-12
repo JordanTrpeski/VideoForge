@@ -215,25 +215,29 @@ def _resolve_images(job_id: str, config: dict) -> list:
     return sorted(images_dir.glob('img_*.png'))
 
 
-def _find_music_file(job_id: str) -> Path | None:
+def _find_music_file(job_id: str, config: dict = None) -> Path | None:
     """
-    Return the first MP3 file found in assets/music/, or None if the
-    directory is empty or does not exist.
+    Return the first MP3 file found in the channel's music directory, or None.
+
+    The directory is read from config['video']['music_dir'] when present;
+    falls back to assets/music/ (global default).
 
     Args:
-        job_id (str): Job identifier for log context.
+        job_id (str):  Job identifier for log context.
+        config (dict): Merged channel config (optional).
 
     Returns:
         Path | None: Path to a music file, or None.
     """
-    music_dir = Path('assets/music')
+    dir_str = (config or {}).get('video', {}).get('music_dir', 'assets/music')
+    music_dir = Path(dir_str)
     if not music_dir.exists():
-        logger.info(f"[JOB {job_id}] assets/music/ directory not found — no background music")
+        logger.info(f"[JOB {job_id}] {music_dir}/ directory not found — no background music")
         return None
 
     mp3_files = sorted(music_dir.glob('*.mp3'))
     if not mp3_files:
-        logger.info(f"[JOB {job_id}] No MP3 files in assets/music/ — no background music")
+        logger.info(f"[JOB {job_id}] No MP3 files in {music_dir}/ — no background music")
         return None
 
     logger.info(f"[JOB {job_id}] Music track: {mp3_files[0].name}")
@@ -244,24 +248,29 @@ def _find_music_file(job_id: str) -> Path | None:
 _BACKGROUND_EXTENSIONS = ('*.mp4', '*.mov', '*.mkv', '*.webm')
 
 
-def _resolve_background_clip(job_id: str) -> Path | None:
+def _resolve_background_clip(job_id: str, config: dict = None) -> Path | None:
     """
-    Return a random background video clip from assets/backgrounds/, or None if
-    the directory is missing or empty.
+    Return a random background video clip from the channel's backgrounds dir,
+    or None if the directory is missing or empty.
+
+    The directory is read from config['video']['backgrounds_dir'] when present;
+    falls back to assets/backgrounds/ (global default).
 
     Used by background_loop visual mode (e.g. Reddit Stories) where the video is
     a looping gameplay/ambient clip instead of an image slideshow.
 
     Args:
-        job_id (str): Job identifier for log context.
+        job_id (str):  Job identifier for log context.
+        config (dict): Merged channel config (optional).
 
     Returns:
         Path | None: Path to a randomly chosen background clip, or None.
     """
-    bg_dir = Path('assets/backgrounds')
+    dir_str = (config or {}).get('video', {}).get('backgrounds_dir', 'assets/backgrounds')
+    bg_dir = Path(dir_str)
     if not bg_dir.exists():
         logger.warning(
-            f"[JOB {job_id}] assets/backgrounds/ not found — "
+            f"[JOB {job_id}] {bg_dir}/ not found — "
             "cannot use background_loop visual mode"
         )
         return None
@@ -273,7 +282,7 @@ def _resolve_background_clip(job_id: str) -> Path | None:
 
     if not clips:
         logger.warning(
-            f"[JOB {job_id}] No video files in assets/backgrounds/ — "
+            f"[JOB {job_id}] No video files in {bg_dir}/ — "
             "cannot use background_loop visual mode"
         )
         return None
@@ -593,13 +602,13 @@ def assemble_video(job_id: str, config: dict) -> dict:
         # Resolve inputs — create placeholders if upstream stages skipped
         # ----------------------------------------------------------------
         audio_path = _resolve_audio(job_id, script, config)
-        music_path = _find_music_file(job_id)
+        music_path = _find_music_file(job_id, config)
 
         # Decide visual source: background-loop clip vs image slideshow
         visual_mode = config.get('pipeline', {}).get('visual_mode', 'images')
         background_path = None
         if visual_mode == 'background_loop':
-            background_path = _resolve_background_clip(job_id)
+            background_path = _resolve_background_clip(job_id, config)
             if background_path is None:
                 logger.warning(
                     f"[JOB {job_id}] background_loop mode but no clip available — "

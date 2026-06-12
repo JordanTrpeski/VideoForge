@@ -1,0 +1,38 @@
+{
+  "channel": {
+    "name": "Reddit Stories",
+    "handle": "",
+    "niche": "reddit_story_telling",
+    "platforms": ["tiktok", "youtube_shorts"],
+    "target_length_seconds": 600
+  },
+  "pipeline": {
+    "visual_mode": "reddit"
+  },
+  "voice": {
+    "provider": "elevenlabs",
+    "voice_id": "SET_VOICE_ID_FOR_THIS_CHANNEL"
+  },
+  "posting": {
+    "batch_size_per_week": 5,
+    "tiktok_post_times": ["09:00", "15:00", "21:00"],
+    "youtube_post_times": ["09:00", "15:00", "21:00"],
+    "timezone": "Europe/Skopje"
+  },
+  "thumbnail": {
+    "mode": "text_template",
+    "text_template": {
+      "variant_accents": [
+        [168, 85, 247],
+        [234, 179, 8]
+      ]
+    }
+  },
+  "metadata": {
+    "description_skeletons": [
+      "This actually happened. {youtube_description}\n\nFollow for daily Reddit stories.\n\n#Shorts #Reddit #Story",
+      "{youtube_description}\n\nYou won't believe how this ends.\n\nFollow for more unbelievable real stories.\n\n#Shorts #Reddit",
+      "Reddit user shares: {topic}\n\n{youtube_description}\n\nMore wild stories every day — follow to not miss them.\n\n#Shorts #Reddit #Story"
+    ]
+  }
+}

@@ -4,10 +4,38 @@
 {% block content %}
 <div class="flex items-center justify-between mb-5">
     <h1 class="text-lg font-semibold text-white">Analytics</h1>
-    <button id="refresh-btn" onclick="loadAnalytics()" class="btn btn-ghost text-xs">Refresh analytics</button>
+    <div class="flex gap-2">
+        <label for="csv-file-input"
+               class="btn btn-ghost text-xs cursor-pointer"
+               title="Import YouTube Studio Content CSV export">
+            Import CSV
+        </label>
+        <input id="csv-file-input" type="file" accept=".csv" class="hidden" onchange="importCsv(this)">
+        <button onclick="loadAll()" class="btn btn-ghost text-xs">Refresh</button>
+    </div>
 </div>
 
-<!-- Stat strip -->
+<!-- CSV import status -->
+<div id="csv-status" class="hidden mb-4 rounded-lg px-4 py-2 text-xs"
+     style="background:#0d1526;border:1px solid var(--border)"></div>
+
+<!-- ===================================================================
+     Channel health cards (one per active channel)
+     =================================================================== -->
+<div id="channel-health-grid" class="grid gap-4 mb-6" style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr))">
+    <div class="card rounded-lg p-4 text-xs" style="color:var(--muted)">Loading channel health…</div>
+</div>
+
+<!-- ===================================================================
+     Kill-metrics verdict cards (one per channel)
+     =================================================================== -->
+<div id="kill-metrics-grid" class="grid gap-4 mb-6" style="grid-template-columns: repeat(auto-fill, minmax(340px, 1fr))">
+    <!-- injected by JS -->
+</div>
+
+<!-- ===================================================================
+     Stat strip — aggregate totals
+     =================================================================== -->
 <div class="grid grid-cols-4 gap-4 mb-6">
     <div class="card rounded-lg p-4">
         <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--muted)">Total views</div>
@@ -23,28 +51,30 @@
     </div>
     <div class="card rounded-lg p-4">
         <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--muted)">Analytics last pulled</div>
-        <div id="stat-pulled" class="text-sm text-slate-400 mt-1">Phase 10 (pending)</div>
+        <div id="stat-pulled" class="text-sm text-slate-400 mt-1">—</div>
     </div>
 </div>
 
 <div class="grid grid-cols-2 gap-6 mb-6">
-    <!-- Top videos -->
+    <!-- Top videos table (extended with CTR + retention) -->
     <div class="card rounded-lg overflow-hidden">
-        <div class="px-5 py-3 border-b" style="border-color:var(--border)">
+        <div class="px-5 py-3 border-b flex items-center justify-between" style="border-color:var(--border)">
             <h2 class="font-semibold text-white text-sm">Top performing videos</h2>
+            <button onclick="openManualEntry()" class="btn btn-ghost text-xs">+ Manual entry</button>
         </div>
-        <div id="top-videos">
+        <div id="top-videos" class="overflow-x-auto">
             <table class="w-full tbl">
                 <thead>
                     <tr>
                         <th class="text-left">#</th>
                         <th class="text-left">Topic</th>
                         <th class="text-right">Views</th>
-                        <th class="text-right">Likes</th>
+                        <th class="text-right">Retention</th>
+                        <th class="text-right">CTR</th>
                     </tr>
                 </thead>
                 <tbody id="top-videos-body">
-                    <tr><td colspan="4" class="text-center py-6" style="color:var(--muted)">Loading...</td></tr>
+                    <tr><td colspan="5" class="text-center py-6" style="color:var(--muted)">Loading...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -53,7 +83,7 @@
     <!-- Bucket performance chart -->
     <div class="card rounded-lg p-5">
         <h2 class="font-semibold text-white text-sm mb-4">Average views by content bucket</h2>
-        <div style="position:relative; height:240px">
+        <div style="position:relative;height:240px">
             <canvas id="bucket-chart"></canvas>
         </div>
         <p id="chart-empty" class="text-center text-xs mt-4 hidden" style="color:var(--muted)">
@@ -85,7 +115,6 @@
         <div id="sa-loading" class="text-xs" style="color:var(--muted)">Loading…</div>
 
         <div id="sa-main" class="hidden">
-            <!-- Correlation summary -->
             <div class="grid grid-cols-3 gap-4 mb-5">
                 <div>
                     <div class="text-xs mb-1" style="color:var(--muted)">Pearson r (score vs views)</div>
@@ -102,13 +131,11 @@
                 </div>
             </div>
 
-            <!-- Lift banner -->
             <div id="sa-lift-wrap" class="rounded-lg px-4 py-2 mb-5 text-sm hidden"
                  style="background:#0d1526;border:1px solid var(--border)">
                 <span id="sa-lift-text"></span>
             </div>
 
-            <!-- Scatter points table -->
             <div class="overflow-x-auto">
                 <table class="tbl w-full">
                     <thead>
@@ -128,6 +155,64 @@
     </div>
 </div>
 
+<!-- ===================================================================
+     Manual analytics entry modal
+     =================================================================== -->
+<div id="manual-modal" class="fixed inset-0 z-50 flex items-center justify-center hidden"
+     style="background:rgba(0,0,0,0.7)">
+    <div class="card rounded-xl p-6 w-full max-w-md" style="border:1px solid var(--border)">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="font-semibold text-white">Manual CTR / Impressions entry</h3>
+            <button onclick="closeManualEntry()" class="text-slate-500 hover:text-white text-lg leading-none">&times;</button>
+        </div>
+        <p class="text-xs mb-4" style="color:var(--muted)">
+            CTR and impressions are not available via the YouTube API.
+            Paste them here from YouTube Studio → Content tab.
+        </p>
+        <div class="space-y-3">
+            <div>
+                <label class="text-xs mb-1 block" style="color:var(--muted)">Job ID</label>
+                <input id="m-job-id" type="text" placeholder="e.g. 001"
+                       class="w-full rounded px-3 py-1.5 text-sm text-white"
+                       style="background:#0d1526;border:1px solid var(--border)">
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="text-xs mb-1 block" style="color:var(--muted)">Impressions</label>
+                    <input id="m-impressions" type="number" placeholder="e.g. 12000"
+                           class="w-full rounded px-3 py-1.5 text-sm text-white"
+                           style="background:#0d1526;border:1px solid var(--border)">
+                </div>
+                <div>
+                    <label class="text-xs mb-1 block" style="color:var(--muted)">CTR % (e.g. 4.2)</label>
+                    <input id="m-ctr" type="number" step="0.1" placeholder="e.g. 4.2"
+                           class="w-full rounded px-3 py-1.5 text-sm text-white"
+                           style="background:#0d1526;border:1px solid var(--border)">
+                </div>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="text-xs mb-1 block" style="color:var(--muted)">Avg retention % (optional)</label>
+                    <input id="m-retention" type="number" step="0.1" placeholder="e.g. 42.5"
+                           class="w-full rounded px-3 py-1.5 text-sm text-white"
+                           style="background:#0d1526;border:1px solid var(--border)">
+                </div>
+                <div>
+                    <label class="text-xs mb-1 block" style="color:var(--muted)">Views (optional)</label>
+                    <input id="m-views" type="number" placeholder="e.g. 8400"
+                           class="w-full rounded px-3 py-1.5 text-sm text-white"
+                           style="background:#0d1526;border:1px solid var(--border)">
+                </div>
+            </div>
+        </div>
+        <div id="manual-status" class="mt-3 text-xs hidden"></div>
+        <div class="flex gap-2 mt-4">
+            <button onclick="submitManualEntry()" class="btn btn-primary text-sm flex-1">Save</button>
+            <button onclick="closeManualEntry()" class="btn btn-ghost text-sm">Cancel</button>
+        </div>
+    </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 {% endblock %}
 
@@ -143,6 +228,132 @@ const BUCKET_LABELS = {
 };
 const BUCKET_COLORS = ['#3b82f6','#22c55e','#f59e0b','#ef4444'];
 
+const VERDICT_STYLE = {
+    'ON TRACK':          { badge: 'badge-green', border: '#22c55e', icon: '✓' },
+    'WARN':              { badge: 'badge-amber', border: '#f59e0b', icon: '⚠' },
+    'KILL-REVIEW':       { badge: 'badge-red',   border: '#ef4444', icon: '✕' },
+    'INSUFFICIENT DATA': { badge: 'badge-gray',  border: '#475569', icon: '?' },
+};
+
+function fmtNum(n) {
+    if (n == null) return '—';
+    if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
+    if (n >= 1000)    return (n/1000).toFixed(1)    + 'K';
+    return String(Math.round(n));
+}
+function escHtml(s) {
+    return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function fmt1(n) { return n != null ? n.toFixed(1) : '—'; }
+function fmtPct(n) { return n != null ? n.toFixed(1) + '%' : '—'; }
+
+// ---------------------------------------------------------------------------
+// Channel health cards
+// ---------------------------------------------------------------------------
+async function loadChannelHealth() {
+    try {
+        const res  = await fetch('/api/analytics/channel-health');
+        const data = await res.json();
+        const grid = document.getElementById('channel-health-grid');
+
+        if (!data.channels || !data.channels.length) {
+            grid.innerHTML = '<div class="text-xs" style="color:var(--muted)">No active channels found.</div>';
+            return;
+        }
+
+        grid.innerHTML = data.channels.map(ch => {
+            const trendSign = ch.trend_pct >= 0 ? '+' : '';
+            const trendColor = ch.trend_pct == null ? 'var(--muted)'
+                             : ch.trend_pct >= 0 ? '#22c55e' : '#ef4444';
+
+            return `
+            <div class="card rounded-lg p-4" style="border-left:3px solid #3b82f6">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="font-semibold text-white text-sm">${escHtml(ch.channel_name)}</div>
+                    ${ch.days_since_first_upload != null
+                      ? `<span class="text-xs" style="color:var(--muted)">Day ${Math.round(ch.days_since_first_upload)}</span>`
+                      : ''}
+                </div>
+                <div class="grid grid-cols-3 gap-3 text-center">
+                    <div>
+                        <div class="text-2xl font-bold text-white">${ch.videos_posted || 0}</div>
+                        <div class="text-xs mt-0.5" style="color:var(--muted)">Videos</div>
+                    </div>
+                    <div>
+                        <div class="text-2xl font-bold" style="color:${ch.avg_retention_pct != null && ch.avg_retention_pct >= 30 ? '#22c55e' : ch.avg_retention_pct != null ? '#f59e0b' : 'var(--muted)'}">
+                            ${fmtPct(ch.avg_retention_pct)}
+                        </div>
+                        <div class="text-xs mt-0.5" style="color:var(--muted)">Avg retention</div>
+                    </div>
+                    <div>
+                        <div class="text-2xl font-bold" style="color:${ch.avg_ctr != null && ch.avg_ctr >= 3 ? '#22c55e' : ch.avg_ctr != null ? '#f59e0b' : 'var(--muted)'}">
+                            ${ch.avg_ctr != null ? ch.avg_ctr.toFixed(1) + '%' : '—'}
+                        </div>
+                        <div class="text-xs mt-0.5" style="color:var(--muted)">Avg CTR</div>
+                    </div>
+                </div>
+                ${ch.trend_pct != null ? `
+                <div class="mt-3 pt-3 flex items-center justify-between text-xs" style="border-top:1px solid var(--border)">
+                    <span style="color:var(--muted)">Trend (latest 5 vs prev 5)</span>
+                    <span style="color:${trendColor};font-weight:600">${trendSign}${fmt1(ch.trend_pct)}%</span>
+                </div>` : ''}
+            </div>`;
+        }).join('');
+
+    } catch(e) {
+        document.getElementById('channel-health-grid').innerHTML =
+            '<div class="text-xs" style="color:var(--muted)">Failed to load channel health.</div>';
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kill-metrics verdict cards
+// ---------------------------------------------------------------------------
+async function loadKillMetrics() {
+    try {
+        const res  = await fetch('/api/analytics/kill-metrics');
+        const data = await res.json();
+        const grid = document.getElementById('kill-metrics-grid');
+
+        if (!data.verdicts || !Object.keys(data.verdicts).length) {
+            grid.innerHTML = '';
+            return;
+        }
+
+        grid.innerHTML = Object.entries(data.verdicts).map(([chId, v]) => {
+            const style    = VERDICT_STYLE[v.verdict] || VERDICT_STYLE['INSUFFICIENT DATA'];
+            const m        = v.metrics || {};
+
+            const metricsHtml = [
+                m.avg_ctr       != null ? `CTR ${m.avg_ctr}%`                  : null,
+                m.avg_retention_pct != null ? `Retention ${m.avg_retention_pct}%` : null,
+                m.max_views     != null ? `Peak ${fmtNum(m.max_views)} views`   : null,
+                m.watch_hours   != null ? `${m.watch_hours}h watch time`        : null,
+            ].filter(Boolean).join(' · ');
+
+            return `
+            <div class="card rounded-lg p-4" style="border-left:3px solid ${style.border}">
+                <div class="flex items-center justify-between mb-2">
+                    <div class="text-sm font-semibold text-white">${escHtml(chId)}</div>
+                    <span class="badge ${style.badge} text-xs">${style.icon} ${v.verdict}</span>
+                </div>
+                <div class="text-xs mb-2" style="color:var(--muted)">
+                    ${v.checkpoint !== 'NONE' ? `<span class="font-mono mr-2">[${v.checkpoint}]</span>` : ''}
+                    ${escHtml(v.rule_fired)}
+                </div>
+                ${metricsHtml ? `
+                <div class="text-xs mt-2 pt-2" style="color:var(--muted);border-top:1px solid var(--border)">
+                    ${escHtml(metricsHtml)}
+                </div>` : ''}
+            </div>`;
+        }).join('');
+
+    } catch(e) { /* silent */ }
+}
+
+// ---------------------------------------------------------------------------
+// Main analytics (stat strip + top videos + bucket chart)
+// ---------------------------------------------------------------------------
 async function loadAnalytics() {
     try {
         const res  = await fetch('/api/analytics');
@@ -153,6 +364,7 @@ async function loadAnalytics() {
         document.getElementById('stat-views').textContent  = fmtNum(data.total_views);
         document.getElementById('stat-likes').textContent  = fmtNum(data.total_likes);
         document.getElementById('stat-posted').textContent = data.top_videos ? data.top_videos.length : '0';
+        document.getElementById('stat-pulled').textContent = new Date().toLocaleTimeString();
 
         // Top videos table
         const tbody = document.getElementById('top-videos-body');
@@ -161,15 +373,20 @@ async function loadAnalytics() {
                 <tr>
                     <td class="text-slate-500 text-xs">${i + 1}</td>
                     <td class="text-white text-xs max-w-xs">
-                        <span title="${escHtml(v.topic)}">${escHtml(v.topic.substring(0,50))}${v.topic.length>50?'…':''}</span>
-                        <span class="text-slate-600 ml-1 text-xs">${v.bucket||''}</span>
+                        <span title="${escHtml(v.topic)}">${escHtml((v.topic||'').substring(0,40))}${(v.topic||'').length>40?'…':''}</span>
+                        ${v.channel_id ? `<span class="text-slate-600 ml-1 text-xs">${v.channel_id}</span>` : ''}
                     </td>
                     <td class="text-right text-blue-400 text-xs">${fmtNum(v.total_views)}</td>
-                    <td class="text-right text-green-400 text-xs">${fmtNum(v.total_likes)}</td>
+                    <td class="text-right text-xs" style="color:${v.avg_retention_pct != null && v.avg_retention_pct >= 30 ? '#22c55e' : v.avg_retention_pct != null ? '#f59e0b' : 'var(--muted)'}">
+                        ${v.avg_retention_pct != null ? v.avg_retention_pct.toFixed(1) + '%' : '—'}
+                    </td>
+                    <td class="text-right text-xs" style="color:${v.avg_ctr != null && v.avg_ctr >= 0.03 ? '#22c55e' : v.avg_ctr != null ? '#f59e0b' : 'var(--muted)'}">
+                        ${v.avg_ctr != null ? (v.avg_ctr * 100).toFixed(1) + '%' : '—'}
+                    </td>
                 </tr>
             `).join('');
         } else {
-            tbody.innerHTML = '<tr><td colspan="4" class="text-center py-8" style="color:var(--muted)">No posted videos yet.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center py-8" style="color:var(--muted)">No posted videos yet.</td></tr>';
         }
 
         // Bucket chart
@@ -196,8 +413,7 @@ async function loadAnalytics() {
                     plugins: { legend: { display: false } },
                     scales: {
                         x: { ticks: { color: '#6b7280' }, grid: { color: '#1a2235' } },
-                        y: { ticks: { color: '#6b7280' }, grid: { color: '#1a2235' },
-                             beginAtZero: true }
+                        y: { ticks: { color: '#6b7280' }, grid: { color: '#1a2235' }, beginAtZero: true }
                     }
                 }
             });
@@ -208,19 +424,9 @@ async function loadAnalytics() {
     } catch(e) { /* silent */ }
 }
 
-function fmtNum(n) {
-    if (!n) return '0';
-    if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
-    if (n >= 1000)    return (n/1000).toFixed(1) + 'K';
-    return String(n);
-}
-function escHtml(s) {
-    return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
-loadAnalytics();
-loadScoreAccuracy();
-
+// ---------------------------------------------------------------------------
+// Score accuracy (11.v2.E)
+// ---------------------------------------------------------------------------
 async function loadScoreAccuracy() {
     try {
         const res  = await fetch('/api/analytics/score-accuracy');
@@ -236,20 +442,17 @@ async function loadScoreAccuracy() {
         }
 
         if (data.data_points < 2) {
-            document.getElementById('sa-empty').textContent =
-                data.message || 'Not enough data yet.';
+            document.getElementById('sa-empty').textContent = data.message || 'Not enough data yet.';
             document.getElementById('sa-empty').classList.remove('hidden');
             return;
         }
 
         document.getElementById('sa-main').classList.remove('hidden');
 
-        // Badge
         const badge = document.getElementById('sa-badge');
         badge.textContent = `${data.data_points} videos`;
         badge.classList.remove('hidden');
 
-        // Correlation
         const corr    = data.correlation;
         const corrEl  = document.getElementById('sa-corr');
         const corrLbl = document.getElementById('sa-corr-label');
@@ -263,7 +466,6 @@ async function loadScoreAccuracy() {
             corrEl.textContent = 'N/A';
         }
 
-        // Summary
         const s = data.summary || {};
         document.getElementById('sa-high').textContent = fmtNum(s.high_score_avg_views);
         document.getElementById('sa-low').textContent  = fmtNum(s.low_score_avg_views);
@@ -278,14 +480,13 @@ async function loadScoreAccuracy() {
             liftWrap.classList.remove('hidden');
         }
 
-        // Table
         const tbody = document.getElementById('sa-table-body');
         tbody.innerHTML = (data.points || []).map(p => {
-            const scoreColor = p.score >= 8 ? '#4ade80' : p.score >= 6 ? '#60a5fa' : p.score >= 4 ? '#fbbf24' : '#f87171';
+            const sc = p.score >= 8 ? '#4ade80' : p.score >= 6 ? '#60a5fa' : p.score >= 4 ? '#fbbf24' : '#f87171';
             return `<tr>
-                <td class="text-white text-xs">${escHtml(p.topic.substring(0,60))}${p.topic.length>60?'…':''}</td>
+                <td class="text-white text-xs">${escHtml((p.topic||'').substring(0,60))}${(p.topic||'').length>60?'…':''}</td>
                 <td><span class="badge badge-gray">${p.bucket||'—'}</span></td>
-                <td class="text-right font-bold text-sm" style="color:${scoreColor}">${p.score.toFixed(1)}</td>
+                <td class="text-right font-bold text-sm" style="color:${sc}">${p.score.toFixed(1)}</td>
                 <td class="text-right text-blue-400 text-xs">${fmtNum(p.views)}</td>
             </tr>`;
         }).join('');
@@ -294,5 +495,115 @@ async function loadScoreAccuracy() {
         document.getElementById('sa-loading').textContent = 'Failed to load score accuracy data.';
     }
 }
+
+// ---------------------------------------------------------------------------
+// Manual analytics entry modal
+// ---------------------------------------------------------------------------
+function openManualEntry() {
+    document.getElementById('manual-modal').classList.remove('hidden');
+    document.getElementById('manual-status').classList.add('hidden');
+}
+function closeManualEntry() {
+    document.getElementById('manual-modal').classList.add('hidden');
+}
+
+async function submitManualEntry() {
+    const jobId  = document.getElementById('m-job-id').value.trim();
+    const impr   = parseFloat(document.getElementById('m-impressions').value);
+    const ctrPct = parseFloat(document.getElementById('m-ctr').value);
+    const ret    = document.getElementById('m-retention').value;
+    const views  = document.getElementById('m-views').value;
+    const status = document.getElementById('manual-status');
+
+    if (!jobId || isNaN(impr) || isNaN(ctrPct)) {
+        status.textContent = 'Job ID, impressions, and CTR are required.';
+        status.style.color = '#ef4444';
+        status.classList.remove('hidden');
+        return;
+    }
+
+    const body = {
+        job_id:      jobId,
+        impressions: Math.round(impr),
+        ctr:         ctrPct / 100,
+    };
+    if (ret)   body.avg_view_pct = parseFloat(ret);
+    if (views) body.views        = parseInt(views);
+
+    try {
+        const res  = await fetch('/api/analytics/manual', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.success) {
+            status.textContent = 'Saved! Refreshing…';
+            status.style.color = '#22c55e';
+            status.classList.remove('hidden');
+            setTimeout(() => { closeManualEntry(); loadAll(); }, 1000);
+        } else {
+            status.textContent = data.error || 'Failed to save.';
+            status.style.color = '#ef4444';
+            status.classList.remove('hidden');
+        }
+    } catch(e) {
+        status.textContent = 'Network error.';
+        status.style.color = '#ef4444';
+        status.classList.remove('hidden');
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CSV import
+// ---------------------------------------------------------------------------
+async function importCsv(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    const statusEl = document.getElementById('csv-status');
+    statusEl.textContent = 'Uploading CSV…';
+    statusEl.style.color = '#60a5fa';
+    statusEl.classList.remove('hidden');
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const res  = await fetch('/api/analytics/csv-import', {
+            method: 'POST',
+            body:   formData,
+        });
+        const data = await res.json();
+
+        if (data.error) {
+            statusEl.textContent = `Error: ${data.error}`;
+            statusEl.style.color = '#ef4444';
+        } else {
+            statusEl.textContent =
+                `CSV imported — ${data.imported} video(s) matched, ` +
+                `${data.skipped} skipped, ${(data.errors||[]).length} errors.`;
+            statusEl.style.color = '#22c55e';
+            setTimeout(() => loadAll(), 800);
+        }
+    } catch(e) {
+        statusEl.textContent = 'Network error during CSV import.';
+        statusEl.style.color = '#ef4444';
+    }
+
+    input.value = '';
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap
+// ---------------------------------------------------------------------------
+function loadAll() {
+    loadChannelHealth();
+    loadKillMetrics();
+    loadAnalytics();
+    loadScoreAccuracy();
+}
+
+loadAll();
 </script>
 {% endblock %}

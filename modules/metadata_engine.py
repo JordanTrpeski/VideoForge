@@ -30,7 +30,10 @@ import anthropic
 from dotenv import load_dotenv
 
 # 3. Local modules
-from database import update_job_status, update_job_field
+from database import (
+    update_job_status, update_job_field,
+    get_last_description_skeleton_index, get_recent_youtube_titles,
+)
 from utils.logger import setup_logger
 
 load_dotenv()
@@ -245,6 +248,108 @@ def _call_claude_with_retry(
 
 
 # ---------------------------------------------------------------------------
+# Description skeleton rotation + title uniqueness
+# ---------------------------------------------------------------------------
+
+def _pick_description_skeleton(channel_id: str, config: dict) -> tuple:
+    """
+    Pick the next description skeleton index for this channel, avoiding
+    repeating the same skeleton used for the previous video.
+
+    Args:
+        channel_id (str): Channel identifier (used for DB lookup).
+        config (dict):    Loaded (merged) config.
+
+    Returns:
+        tuple: (skeleton_index: int, skeleton_template: str)
+    """
+    skeletons = config.get('metadata', {}).get('description_skeletons', [])
+    if not skeletons:
+        return -1, '{youtube_description}'
+
+    last_idx = get_last_description_skeleton_index(channel_id)
+    n = len(skeletons)
+
+    if n == 1:
+        return 0, skeletons[0]
+
+    # Rotate to next — ensure we don't repeat the last one
+    next_idx = (last_idx + 1) % n
+    logger.debug(
+        f"[METADATA] Skeleton rotation: last={last_idx}, next={next_idx} "
+        f"(total skeletons: {n})"
+    )
+    return next_idx, skeletons[next_idx]
+
+
+def _apply_description_skeleton(
+    template: str,
+    youtube_description: str,
+    topic: str,
+    hook: str,
+) -> str:
+    """
+    Substitute placeholders in the description skeleton template.
+
+    Supported placeholders: {youtube_description}, {topic}, {hook}
+
+    Args:
+        template (str):             Skeleton template string.
+        youtube_description (str):  Claude-generated description body.
+        topic (str):                Video topic.
+        hook (str):                 Hook line from script.
+
+    Returns:
+        str: Fully rendered description.
+    """
+    result = template
+    result = result.replace('{youtube_description}', youtube_description)
+    result = result.replace('{topic}', topic)
+    result = result.replace('{hook}', hook)
+    return result
+
+
+def _check_title_uniqueness(
+    proposed_title: str,
+    channel_id: str,
+    job_id: str,
+) -> str:
+    """
+    Ensure the first 4 words of proposed_title don't match any of the
+    channel's last 10 video titles.  If they do, append a disambiguator.
+
+    Args:
+        proposed_title (str): Claude's suggested youtube_title.
+        channel_id (str):     Channel identifier for DB lookup.
+        job_id (str):         For logging.
+
+    Returns:
+        str: Original or lightly amended title.
+    """
+    recent_titles = get_recent_youtube_titles(channel_id, limit=10)
+
+    def _first4(title: str) -> str:
+        words = title.strip().split()
+        return ' '.join(words[:4]).lower()
+
+    proposed_start = _first4(proposed_title)
+
+    for existing in recent_titles:
+        if _first4(existing) == proposed_start:
+            logger.warning(
+                f"[JOB {job_id}] Title first-4-words clash detected: "
+                f"'{proposed_start}' matches existing '{existing[:60]}' — "
+                f"appending disambiguation"
+            )
+            # Append a short disambiguator — Claude already picked a good title,
+            # we just need to break the 4-word prefix match
+            proposed_title = proposed_title.rstrip() + ' — Explained'
+            break
+
+    return proposed_title
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -318,10 +423,37 @@ def generate_metadata(job_id: str, config: dict) -> dict:
             f"youtube_tags: {len(metadata['youtube_tags'])}"
         )
 
+        # ----------------------------------------------------------------
+        # Title uniqueness — first-4-words check against last 10 channel titles
+        # ----------------------------------------------------------------
+        channel_id = config.get('_channel', {}).get('id', config.get('default_channel', 'engineering_brief'))
+        metadata['youtube_title'] = _check_title_uniqueness(
+            metadata['youtube_title'], channel_id, job_id
+        )
+
+        # ----------------------------------------------------------------
+        # Description skeleton rotation
+        # ----------------------------------------------------------------
+        skeleton_idx, skeleton_template = _pick_description_skeleton(channel_id, config)
+        if skeleton_template and skeleton_idx >= 0:
+            hook_text = script.get('hook', '')
+            topic_text = script.get('topic', '')
+            metadata['youtube_description'] = _apply_description_skeleton(
+                skeleton_template,
+                metadata['youtube_description'],
+                topic_text,
+                hook_text,
+            )
+            logger.info(f"[JOB {job_id}] Applied description skeleton #{skeleton_idx}")
+        else:
+            skeleton_idx = -1
+            logger.info(f"[JOB {job_id}] No description skeletons configured — using Claude description as-is")
+
         # Enrich with pipeline metadata
         metadata['job_id'] = job_id
         metadata['topic'] = script.get('topic', '')
         metadata['generated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        metadata['description_skeleton_index'] = skeleton_idx
 
         # ----------------------------------------------------------------
         # Save
@@ -340,6 +472,8 @@ def generate_metadata(job_id: str, config: dict) -> dict:
         # Update database
         # ----------------------------------------------------------------
         update_job_field(job_id, 'metadata_path', str(output_path))
+        if skeleton_idx >= 0:
+            update_job_field(job_id, 'description_skeleton_index', skeleton_idx)
         update_job_status(job_id, 'review')
 
         elapsed = time.time() - stage_start

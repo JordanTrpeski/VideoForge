@@ -1,0 +1,25 @@
+{
+  "channel": {
+    "name": "The Engineering Brief",
+    "handle": "HowThingsWorkEng",
+    "niche": "engineering",
+    "platforms": ["tiktok", "youtube_shorts"],
+    "target_length_seconds": 70
+  },
+  "thumbnail": {
+    "mode": "text_template",
+    "text_template": {
+      "variant_accents": [
+        [59, 130, 246],
+        [239, 68, 68]
+      ]
+    }
+  },
+  "metadata": {
+    "description_skeletons": [
+      "Ever wondered {topic}? Most people have no idea.\n\n{youtube_description}\n\nFollow for weekly engineering secrets.\n\n#Shorts",
+      "{youtube_description}\n\n{topic} — the engineering nobody explains simply.\n\nFollow @HowThingsWorkEng for weekly breakdowns.\n\n#Shorts",
+      "Here's what school never taught you about {topic}.\n\n{youtube_description}\n\nMore real engineering every week — follow to not miss it.\n\n#Shorts"
+    ]
+  }
+}
