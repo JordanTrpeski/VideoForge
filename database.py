@@ -326,6 +326,8 @@ def update_job_field(job_id: str, field: str, value) -> None:
         'story_id', 'story_role', 'linked_job_id', 'scheduled_upload_at',
         # Compliance & odds pack
         'thumbnail_variant', 'disclosure_checklist_required', 'description_skeleton_index',
+        # Reddit dedup — FIX 3
+        'reddit_post_id',
     }
     if field not in allowed_fields:
         raise ValueError(f"Field '{field}' is not an allowed job column")
@@ -943,6 +945,9 @@ def _run_migrations() -> None:
         "ALTER TABLE jobs ADD COLUMN thumbnail_variant INTEGER DEFAULT 0",
         "ALTER TABLE jobs ADD COLUMN disclosure_checklist_required INTEGER DEFAULT 0",
         "ALTER TABLE jobs ADD COLUMN description_skeleton_index INTEGER DEFAULT -1",
+        # FIX 3 — track originating Reddit post ID on the job so dedup covers
+        # posts that were approved+queued even if the topic_bank row is deleted
+        "ALTER TABLE jobs ADD COLUMN reddit_post_id TEXT",
     ]
     conn = get_connection()
     try:
@@ -1400,19 +1405,26 @@ def insert_reddit_candidate(
 
 def get_existing_reddit_ids() -> set:
     """
-    Return the set of Reddit post IDs already stored in topic_bank.
+    Return the set of Reddit post IDs already seen — either as topic_bank
+    candidates or as approved pipeline jobs (via jobs.reddit_post_id).
 
-    Used by the Reddit scanner to skip posts that were captured on a prior run.
+    Covers the gap where a topic_bank row is deleted after approval: the job
+    still carries the reddit_post_id so the post won't be re-surfaced.
 
     Returns:
-        set[str]: Reddit post IDs already present.
+        set[str]: Reddit post IDs to skip on the next scan.
     """
     conn = get_connection()
     try:
-        rows = conn.execute(
+        tb_rows = conn.execute(
             "SELECT reddit_id FROM topic_bank WHERE reddit_id IS NOT NULL"
         ).fetchall()
-        return {r['reddit_id'] for r in rows if r['reddit_id']}
+        job_rows = conn.execute(
+            "SELECT reddit_post_id FROM jobs WHERE reddit_post_id IS NOT NULL"
+        ).fetchall()
+        ids = {r['reddit_id'] for r in tb_rows if r['reddit_id']}
+        ids |= {r['reddit_post_id'] for r in job_rows if r['reddit_post_id']}
+        return ids
     finally:
         conn.close()
 

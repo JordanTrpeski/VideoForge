@@ -610,9 +610,10 @@ def assemble_video(job_id: str, config: dict) -> dict:
         if visual_mode == 'background_loop':
             background_path = _resolve_background_clip(job_id, config)
             if background_path is None:
-                logger.warning(
-                    f"[JOB {job_id}] background_loop mode but no clip available — "
-                    "falling back to image slideshow"
+                raise RuntimeError(
+                    "Background loop mode requires .mp4 clips in "
+                    "channels/<slug>/assets/backgrounds/ — found 0 clips. "
+                    "Drop gameplay footage there and retry."
                 )
 
         # ----------------------------------------------------------------

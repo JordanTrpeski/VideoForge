@@ -107,8 +107,10 @@
             — Approving will upload this video now and schedule the teaser ≥ 24 h later.
             {% elif linked_job.status in ('scheduled_upload', 'uploading', 'posted') %}
             — Teaser already in upload queue.
+            {% elif linked_job.status in ('failed', 'archived') %}
+            — Teaser did not complete; you can approve the long video without it.
             {% else %}
-            — Teaser still processing; it will be scheduled automatically once ready.
+            — Teaser still processing; approval is blocked until it reaches review.
             {% endif %}
         </span>
     </div>
@@ -176,7 +178,36 @@
         {% if job.disclosure_checklist_required %}
         <input type="hidden" name="disclosure_acknowledged" id="disclosure-ack-input" value="">
         {% endif %}
-        {% if job.story_role == 'long' and linked_job and linked_job.status == 'review' %}
+
+        {% set _safe_teaser = ['review', 'scheduled_upload', 'uploading', 'posted', 'failed', 'archived'] %}
+        {% set teaser_not_ready = (job.story_role == 'long'
+                                   and linked_job
+                                   and linked_job.story_role == 'short'
+                                   and linked_job.status not in _safe_teaser) %}
+
+        {% if teaser_not_ready %}
+        <div class="mb-4 p-3 rounded-lg" style="background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.4)">
+            <p class="text-xs font-semibold text-amber-400 mb-1">
+                &#9888; Teaser not ready — Job {{ linked_job.id }} ({{ linked_job.status }})
+            </p>
+            <p class="text-xs text-slate-400 mb-3">
+                Wait for the teaser to finish processing and reach review before approving,
+                or check the box below to upload this video alone and permanently abandon the teaser.
+            </p>
+            <label class="flex items-start gap-2 cursor-pointer">
+                <input type="checkbox" id="abandon-teaser-check" name="abandon_teaser" value="1" class="mt-0.5 w-4 h-4">
+                <span class="text-xs text-slate-300">
+                    Approve long video only and
+                    <strong class="text-red-400">permanently abandon the teaser</strong>
+                    — it will be marked failed and will not be uploaded
+                </span>
+            </label>
+        </div>
+        <button class="btn btn-success text-sm" id="approve-btn" disabled
+                style="opacity:0.45; cursor:not-allowed">
+            &#10003; Approve &amp; upload
+        </button>
+        {% elif job.story_role == 'long' and linked_job and linked_job.status == 'review' %}
         <button class="btn btn-success text-sm" id="approve-btn">&#10003; Approve &amp; upload (schedules teaser in 24 h)</button>
         {% else %}
         <button class="btn btn-success text-sm" id="approve-btn">&#10003; Approve &amp; upload</button>
@@ -561,6 +592,30 @@ function selectVariant(v) {
 
     disclosureCheck.addEventListener('change', function() {
         disclosureCheck.style.outline = '';
+    });
+})();
+
+// Abandon-teaser gate — approve button stays disabled until the checkbox is
+// checked AND the confirmation dialog is accepted.
+(function() {
+    const abandonCheck = document.getElementById('abandon-teaser-check');
+    const approveBtn   = document.getElementById('approve-btn');
+    if (!abandonCheck || !approveBtn) return;
+
+    abandonCheck.addEventListener('change', function() {
+        if (abandonCheck.checked) {
+            if (!confirm('Permanently abandon the teaser?\n\nIt will be marked as failed and will not be uploaded. This cannot be undone.')) {
+                abandonCheck.checked = false;
+                return;
+            }
+            approveBtn.disabled      = false;
+            approveBtn.style.opacity = '';
+            approveBtn.style.cursor  = '';
+        } else {
+            approveBtn.disabled      = true;
+            approveBtn.style.opacity = '0.45';
+            approveBtn.style.cursor  = 'not-allowed';
+        }
     });
 })();
 </script>

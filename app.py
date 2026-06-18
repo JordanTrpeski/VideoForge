@@ -791,19 +791,36 @@ def approve_job(job_id):
 
     config = _load_config(channel_slug=job.get('channel_id'))
 
-    # Story pair: if this is the long-form job, also put the teaser in review
-    # so _run_upload_thread can pick it up once the long upload has a YouTube URL.
-    # If the teaser is somehow not at review yet, approve the long alone — the
-    # teaser will be scheduled when its pipeline finishes and reaches review.
+    # Story pair gate — block approval if the linked teaser has not yet reached
+    # a terminal or upload-ready status. The owner must either wait for the
+    # teaser pipeline to finish, or explicitly check the abandon-teaser checkbox
+    # to upload the long video alone without the paired short.
     linked_job = get_linked_job(job_id) if job.get('linked_job_id') else None
-    if linked_job and linked_job.get('story_role') == 'short':
-        if linked_job.get('status') not in ('review', 'scheduled_upload', 'uploading', 'posted'):
+    _safe_teaser_statuses = {'review', 'scheduled_upload', 'uploading', 'posted', 'failed', 'archived'}
+    teaser_not_ready = (
+        linked_job
+        and linked_job.get('story_role') == 'short'
+        and linked_job.get('status') not in _safe_teaser_statuses
+    )
+    if teaser_not_ready:
+        if not request.form.get('abandon_teaser'):
             flash(
-                f'Teaser job {linked_job["id"]} is still processing '
-                f'({linked_job["status"]}) — approving long video only. '
-                'The teaser will be scheduled automatically after it finishes.',
-                'warning',
+                f'Teaser job {linked_job["id"]} is not ready yet '
+                f'(status: {linked_job["status"]}) — '
+                'wait for it to finish processing before approving.',
+                'error',
             )
+            return redirect(url_for('job_detail', job_id=job_id))
+        # Owner explicitly chose to abandon — log and mark terminal
+        logger.warning(
+            f'[JOB {job_id}] Owner abandoned teaser {linked_job["id"]} '
+            f'(was: {linked_job["status"]}) — long-job approval proceeding without paired short.'
+        )
+        update_job_status(
+            linked_job['id'], 'failed',
+            error_module='abandoned',
+            error_message='Teaser abandoned by owner at long-job review — long video uploaded without paired short.',
+        )
 
     threading.Thread(
         target=_run_upload_thread,
@@ -2251,6 +2268,8 @@ def approve_reddit_candidate(topic_id):
         source_selftext=t.get('selftext') or '',
         channel_id=job_channel,
     )
+    if t.get('reddit_id'):
+        update_job_field(jid, 'reddit_post_id', t['reddit_id'])
     update_topic_status(topic_id, 'queued')
     logger.info(f"[JOB {jid}] Created from Reddit candidate {topic_id} — running script stage")
 

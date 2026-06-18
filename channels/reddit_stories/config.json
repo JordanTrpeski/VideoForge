@@ -7,7 +7,7 @@
     "target_length_seconds": 600
   },
   "pipeline": {
-    "visual_mode": "reddit"
+    "visual_mode": "background_loop"
   },
   "voice": {
     "provider": "elevenlabs",
