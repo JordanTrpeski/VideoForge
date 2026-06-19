@@ -1,165 +1,159 @@
 # VideoForge Roadmap
 
 A multi-channel AI video production system. Pulls topics, generates
-scripts with Claude, narrates with TTS, assembles with MoviePy,
-captions with faster-whisper, and uploads to YouTube / TikTok /
-Instagram. Reviewed and approved via web dashboard.
+scripts with Claude, narrates with TTS, assembles with MoviePy or
+FFmpeg, captions with faster-whisper, and uploads to YouTube /
+TikTok / Instagram. Reviewed and approved via web dashboard.
 
 ---
 
-## Current state (entering Phase 13)
+## Current state (entering Phase 14)
 
 ### Completed phases
 
 **Phases 1–11.v2** — Core pipeline, dashboard, scheduler, topic
-scoring, research dashboard, comment mining, score accuracy feedback,
-device sync via Google Drive, Priority Alerts.
+scoring, research dashboard, comment mining, score accuracy
+feedback, device sync via Google Drive, Priority Alerts.
 
-**Phase 12** — Multi-channel architecture. Per-channel config overlay,
-prompts, credentials, assets. Dashboard channel switcher. CLI
---channel flag on all commands. Channel-scoped database fields.
+**Phase 12** — Multi-channel architecture. Per-channel config
+overlay, prompts, credentials, assets. Dashboard channel switcher.
+CLI --channel flag on all commands. Channel-scoped database fields.
 
-**Reddit Stories pipeline (prompts 1–2)** — Reddit API scraper,
-rewrite engine with authenticity rules, background loop visual mode,
-hook selection at review gate, TTS abstraction layer (ElevenLabs,
-OpenAI TTS, Kokoro local).
-
-**Analytics + kill metrics (prompt 4)** — YouTube Analytics API
-integration, time-stamped snapshots, manual CTR entry + CSV import,
-kill metrics engine with v15/v30/d60 checkpoints, verdict states
-(ON TRACK / WARN / KILL-REVIEW / INSUFFICIENT DATA).
-
-**Dual-output pipeline (prompt 5)** — One Reddit story produces a
-long-form video and a linked teaser short with URL injection.
-
-**Compliance + polish (prompt 6)** — PIL text-template thumbnails
-with picker, metadata skeleton rotation, title uniqueness enforcement,
-YouTube synthetic media disclosure flag, permanent post-upload
-archive.
-
-**Hardening fixes** — Dual-output teaser gate (hard block with
-explicit abandon path), background clip existence guard, kill-metrics
-calendar visibility on dashboard, Reddit post deduplication across
-topic_bank and jobs tables.
+**Phase 13** — Multi-channel readiness. Seven blocks delivered:
+per-channel video templates, API usage tracking with budget alerts,
+long-form ambient visual mode (up to 3hr videos), TikTok and
+Instagram upload modules with 6hr offset scheduling, channel-aware
+config and prompt editors, Cloudflare R2 cloud preview, R2
+lifecycle with nightly cleanup. Audit: 33 PASS, 2 PARTIAL (deferred
+to Phase 15), 0 MISSING.
 
 ### Audit state
 
-47 PASS / 5 PARTIAL / 1 MISSING as of the most recent audit, then
-all blockers resolved. System is launch-ready for a single Reddit
-Stories channel after a dry run.
+Phase 13 is committed. System is launch-ready for a single Reddit
+Stories channel after Phase 14 completes the pre-launch readiness
+work and a dry run is performed.
 
 ---
 
-## Phase 13 — Multi-channel readiness
+## Phase 14 — Pre-launch readiness
 
-**Goal:** finish VideoForge so it can run three production channels
-(Reddit Stories, Dark Psychology, Sleep Lore) with cross-platform
-distribution and remote review from work.
+Goal: complete VideoForge so channel 1 (Reddit Stories,
+betrayal/revenge lane) can launch with optimized rendering,
+research-backed editorial prompts, symbolic-object thumbnails, and
+post-upload review tracking.
 
-### Block A — Video templates per channel
-Per-channel content templates. Each defines: visual_mode, length
-range, hook style pool, music palette, thumbnail mode, prompt
-overrides, dual_output flag. Variation engine picks template per job,
-then varies length and hook within that template's pool.
+Status: planned, not yet implemented.
 
-### Block B — API usage tracking
-Per-channel, per-provider tracking of units used and estimated cost.
-Dashboard page with month-to-date breakdown and 80% budget alerts.
-Nightly rollup. Providers: claude, elevenlabs, openai_tts, kokoro,
-leonardo, youtube, reddit, tiktok, instagram, r2.
+### Block 1 — FFmpeg renderer migration
+Replace MoviePy final rendering with FFmpeg-direct command
+templates. Audio mastering via FFmpeg loudnorm targeting -14 LUFS.
+Three render formats supported. MoviePy retained as fallback.
 
-### Block C — Long-form ambient visual mode
-New visual_mode 'long_form_ambient' for sleep content. Looped ambient
-clip up to 3 hours, optional overlay image, captions-off support,
-mixed ambient audio at configurable dB. Variation engine length cap
-raised.
+### Block 2 — Editorial additions from creator research
+Original-fiction script generation, promise-system self-check,
+aggressive 0-5s irreversible-event hook structure, three title and
+three thumbnail text candidates with alternates for A/B testing.
 
-### Block D — TikTok + Instagram upload
-Cross-platform funnel for teaser shorts. After YouTube short upload
-succeeds, schedule parallel TikTok + Instagram uploads 6 hours later
-with YouTube long-form URL injected into descriptions. Per-channel
-platform enable/disable flags.
+### Block 3 — Betrayal/revenge lane configuration
+Emotional lane locked. Subgenre weighting (50% family / 30%
+romantic / 20% legal-proof). Bureaucratic-revenge climax
+requirement. Template library from research. Length range
+1440-1920 seconds default. Kokoro speed tuned to 180-200 WPM.
 
-### Block E — Channel-aware editors
-Config and prompt editors write to channels/<slug>/ overlay when a
-channel is selected, fall back to global only when no channel filter
-is active. UI badge indicates scope.
+### Block 4 — Symbolic-object thumbnail visual_mode
+New visual_mode generates clean single-object thumbnails via
+Leonardo with PIL text overlay. Two variants for picker.
 
-### Block F — Cloud video preview (Cloudflare R2)
-After captioning, upload final video and thumbnail to R2. Dashboard
-plays from preview_url. Enables review from any device, any network,
-without home upload bandwidth bottleneck. Local fallback if R2
-upload fails.
+### Block 5 — Production evidence metadata log
+Per-video JSON archive with full production metadata for compliance
+and YPP review preparedness.
 
-### Block G — R2 lifecycle and retention
-Per-channel retention_days (default 7) and
-keep_after_youtube_upload (default false). Nightly cleanup job.
-Dashboard shows R2 storage used per channel and next-cleanup date.
+### Block 6 — Post-upload review tracking (48h window)
+Dashboard surfaces videos awaiting 48-hour review with four key
+metrics from YouTube Analytics API.
 
-### Discipline rules
-- Each block completes with explicit pass conditions before the next
-  begins.
-- After each block: brief summary of files touched and pass condition
-  result.
-- No scope expansion mid-build. Anything that comes up goes in
-  PHASE_14_NOTES.md instead.
-- Final step is read-only audit against all seven blocks with file
-  path and line number evidence per item.
+### Block 7 — Export-prompt / import-script flow
+Manual model escalation path for hero videos via browser-based
+stronger models (Opus 4.7, GPT-5 Pro) using existing subscriptions.
+
+See PHASE_14_PLAN.md for full block specifications and pass
+conditions.
 
 ---
 
 ## Channels — strategy
 
 ### Channel 1: Reddit Stories
-First-person AI-written drama fiction in Reddit style. 20–40 min
-long-form + 45–60s teaser shorts. Female Kokoro voice, locked.
-Mixed backgrounds: gameplay, satisfying content, ambient. Cross-
-platform to TikTok and Instagram Reels.
+First-person AI-written drama fiction in Reddit style. Betrayal/
+revenge emotional lane with moral-clarity payoffs. Subgenre mix:
+50% family/inheritance/property, 30% romantic/loyalty, 20%
+legal-proof. 24-32 minute long-form (with occasional 40-56 min)
+plus 45-60s teaser shorts. Female Kokoro voice, locked. Backgrounds
+mix gameplay, satisfying, and ambient content (categorized
+structure planned post-launch). Cross-platform funnel to TikTok and
+Instagram Reels with YouTube long-form CTA.
 
 ### Channel 2: Dark Psychology / Philosophy
 Video essay format on Mindplicit / Dark Psychology Coded model.
-8–15 min long-form. Male Kokoro voice, calm and intellectual.
-Leonardo cinematic imagery. 70/30 mix of hard-edge and introspective
-content. Light teaser shorts.
+8-15 min long-form. Male Kokoro voice, calm and intellectual.
+Leonardo cinematic imagery. 70/30 mix of hard-edge dark psychology
+and Kee-style introspective content. Light teaser shorts.
 
 ### Channel 3: Sleep Lore
-Pure mythology and folklore long-form ambient. 1–3 hour episodes.
-Neutral calm Kokoro voice. Looped fireplace / forest / rain visuals.
-No captions. Public domain source material. Podcast distribution
-(Spotify, Apple Podcasts) instead of TikTok funnel.
+Pure mythology and folklore long-form ambient. 1-3 hour episodes.
+Neutral calm Kokoro voice. Looped fireplace / forest / rain
+visuals. No captions. Public domain source material. Podcast
+distribution to Spotify and Apple Podcasts planned post-launch
+(not currently built).
 
 ### Launch sequence
-1. Phase 13 build completes (this phase)
-2. Dry run channel 1 on existing Engineering Brief channel
-3. Launch channel 1 (Reddit Stories) on fresh Google account
-4. Run 14–21 days, daily editorial gate
-5. If v30 metrics green: launch channel 2 (Dark Psychology)
-6. Same gap, then launch channel 3 (Sleep Lore)
+1. Phase 14 build completes
+2. Dry run channel 1 on existing Engineering Brief channel — full
+   pipeline end-to-end on a real story, output reviewed but not
+   uploaded publicly. Verifies pipeline integration before real
+   launch.
+3. Engineering Brief set to private and abandoned after dry run
+4. Launch channel 1 on fresh Google account
+5. Run until 4-5 long-form videos shipped with editorial gate
+   holding under real production conditions
+6. Open channel 2 (Dark Psychology) on separate fresh Google
+   account, same pattern
+7. Open channel 3 (Sleep Lore) on separate fresh Google account,
+   same pattern
 
 ### Identity / account strategy
-Setup C — separate Google account, separate AdSense, separate
-TikTok and Instagram per channel. Engineering Brief used as dry-run
-target only, then private and abandon.
+Setup C — separate Google account per channel. Separate TikTok and
+Instagram per channel. Channels can be created and operated in
+parallel; AdSense linkage only occurs when a channel hits YPP
+threshold (1K subs + 4K watch hours) and applies to monetization.
+Engineering Brief used as dry-run target only, then private and
+abandon. Main email reserved for future human-made channel.
 
 ---
 
-## Future phases (not in scope for Phase 13)
+## Future phases (not in scope for Phase 14)
 
-### Phase 14 — Server migration
-Move VideoForge from local home machine to VPS. HTTPS, 24/7
-scheduler, PostgreSQL database. Triggered when channels 1–3 are all
-running and home-machine ops become limiting.
+### Phase 15 — Infrastructure scaling
+VPS migration (Hetzner / DigitalOcean), HTTPS, PostgreSQL multi-
+process safety, 24/7 scheduler not dependent on home machine.
+Triggered when home-machine ops become limiting or when channels
+1-3 are all running. Also captures deferred Phase 13 audit gaps
+(R2 delete tracking, OAuth refresh tracking) and CLAUDE.md refresh.
+See PHASE_15_NOTES.md.
 
-### Phase 15 — Intelligence layer
-Self-improving score weights, A/B testing for hooks and thumbnails,
-series detection, competitor gap analysis, seasonal calendar.
+### Phase 16 — Intelligence layer
+Self-improving score weights based on accumulated performance data,
+internal A/B testing infrastructure for hooks and thumbnails,
+series detection, competitor gap analysis. Triggered after 6+
+months of production data across multiple channels. See
+PHASE_16_NOTES.md.
 
-### Future channels (sequential, after channels 1–3 prove)
-- Fandom Sleep ASMR (Good Knight Sleep model, original in-universe
-  stories)
+### Future channels (sequential, after channels 1-3 prove)
+- Fandom Sleep ASMR (Good Knight Sleep model with original
+  in-universe stories)
 - HFY sci-fi narration (SciFiStories1977 model)
 - Warm psychology (Kee model — backup if Dark Psychology has tone
-  issues)
+  issues, or as parallel softer-tone channel)
 
 ---
 
@@ -167,14 +161,23 @@ series detection, competitor gap analysis, seasonal calendar.
 
 - Editorial gate stays real per channel. If it slips, kill the
   weakest channel before scaling.
-- Kill metrics calibrated to runway and time budget. Day 60 review
-  is hard, on the calendar, non-negotiable.
-- AdSense linkage risk: separate Google accounts per channel to
-  isolate. One strike does not cascade.
+- Kill metrics calibrated to CTR and AVD signals (not vanity view
+  counts). Day 60 review is hard, on the calendar, non-negotiable.
+- AdSense single-publisher rule applies: one AdSense per legal
+  payee (Google policy). When monetized, all channels link to the
+  same AdSense account. Channel-level strikes affect that channel;
+  AdSense-level penalties affect all linked channels. Channels can
+  be created and operated in parallel before YPP application;
+  monetization linkage is the actual risk concentration point.
 - YouTube inauthentic content policy is the existential risk.
   Defense is editorial fingerprint per channel: distinct voice,
   distinct visual language, distinct content category, human
-  judgment on every video.
-- Cost discipline: ~$10–25/month total across all three channels.
-  R2 free tier with 7-day retention. Kokoro instead of paid TTS at
-  long-form lengths.
+  judgment on every video. Variation engine rotates length, hook
+  style, structure to break template patterns.
+- Cost discipline: ~$30-50/month total at full three-channel
+  operation. R2 free tier with 7-day retention. Kokoro primary
+  TTS; OpenAI tts-1 paid fallback; ElevenLabs only for selective
+  premium use.
+- Content originality: all scripts AI-generated original fiction.
+  No narration of scraped source material. Production evidence
+  archived per video for YPP review preparedness.
