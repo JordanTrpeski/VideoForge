@@ -1,474 +1,466 @@
 # VideoForge
 
-A multi-channel AI video production system. Topic discovery → script
-generation → TTS narration → video assembly → captioning → multi-platform
-upload, with a human review gate, kill-metrics analytics, and a Cloudflare R2
-cloud preview so the operator can approve videos from any device. Built to run
-three faceless YouTube / TikTok / Instagram channels (Reddit Stories, Dark
-Psychology, Sleep Lore) from a single local machine.
+VideoForge is a local AI video production system for faceless short-form and
+long-form channels. It takes a topic or source story, generates a script,
+creates narration, assembles a video, captions it when appropriate, prepares
+metadata and thumbnails, gates everything behind human review, and then uploads
+approved work to YouTube, TikTok, and Instagram.
 
-> **Status:** Phase 13 complete. The system is built; no channel has shipped
-> at scale yet. Reddit Stories is the first production target and is in
-> dry-run prep on the Engineering Brief channel.
+The original project started as an engineering explainer pipeline for
+**The Engineering Brief**. The current codebase has grown into a multi-channel
+operator console with channel overlays, Reddit story ingestion, content
+templates, dual long/short outputs, API usage tracking, kill-metric analytics,
+scheduled cross-platform posting, and optional Cloudflare R2 review previews.
 
----
+Current status: the implementation contains Phases 1-13 from the roadmap. The
+first production target is the `reddit_stories` channel; `engineering_brief`
+remains the default channel and a useful dry-run target.
 
-## What it is
+## What It Does
 
-VideoForge takes a topic (typed, scored from Google Trends, scraped from
-Reddit, mined from YouTube comments, or fast-tracked from a priority alert)
-and runs it through a deterministic pipeline:
+At a high level, VideoForge runs this pipeline:
 
-```
-Topic
-  │
-  ├─[1] Script           Claude → structured JSON (narration + 8 image prompts
-  │                                or 5 candidate hooks for Reddit rewrites)
-  │
-  ├─[2] Voice            ElevenLabs / OpenAI TTS / Kokoro (local) → MP3
-  │
-  ├─[3] Images           Leonardo.AI → 1080×1920 portrait PNGs
-  │       (skipped when visual_mode = background_loop / long_form_ambient)
-  │
-  ├─[4] Assembly         MoviePy → raw MP4
-  │       (image slideshow │ looped background clip │ ambient + overlay)
-  │
-  ├─[5] Captions         faster-whisper → word timestamps → burn-in
-  │       (skipped when template caption_mode = off)
-  │
-  ├─[6] Metadata + Thumbnail   Claude → SEO JSON / PIL → thumbnail variants
-  │
-  ├─[*] R2 cloud preview      Optional — upload to Cloudflare R2 so the
-  │                            dashboard can play the video from anywhere
-  │
-  ├──── ▶ Review gate (human) ◀ ── nothing uploads until you click Approve
-  │
-  ├─[7] Upload           YouTube Data API v3 → long-form
-  │                       TikTok + Instagram → teaser short, scheduled +6h
-  │
-  └─[8] Kill metrics     YouTube Analytics v2 → v15 / v30 / d60 verdicts
-```
-
-Every stage is a Python module that returns a `{success, ...}` dict and stops
-the pipeline on failure. Missing API keys cause a stage to skip cleanly rather
-than crash. All tunables live in `config.json` (and per-channel overlays);
-nothing is hardcoded.
-
----
-
-## Architecture
-
-### Multi-channel overlay
-
-Each channel lives under `channels/<slug>/`:
-
-```
-channels/
-  reddit_stories/
-    config.json              # overlay — deep-merged on top of root config.json
-    prompts/
-      script_prompt.txt      # overrides global prompt for this channel
-      reddit_rewrite_prompt.txt
-    assets/
-      backgrounds/           # gameplay clips for background_loop mode
-      music/                 # palette for this channel
-    youtube_token.json       # platform credentials live with the channel
-    tiktok_token.json
-    instagram_token.json
+```text
+Topic, trend alert, topic-bank row, or Reddit candidate
+  |
+  v
+Script generation
+  - Standard mode: Claude produces explainer script JSON plus visual prompts.
+  - Reddit mode: Claude rewrites a source story and produces hook options.
+  |
+  v
+Voice generation
+  - ElevenLabs, OpenAI TTS, or local Kokoro, selected per channel.
+  |
+  v
+Visual production
+  - Leonardo image set for image-based shorts.
+  - Background-loop clips for Reddit-style story videos.
+  - Long-form ambient clips for sleep or lore formats.
+  |
+  v
+MoviePy assembly
+  - Raw MP4 from narration, visuals, optional music, and template settings.
+  |
+  v
+Captioning
+  - faster-whisper word timestamps and burn-in captions.
+  - Skips cleanly when a template sets caption_mode = off.
+  |
+  v
+Metadata and thumbnail
+  - Claude SEO metadata.
+  - Frame-capture or text-template thumbnail variants.
+  |
+  v
+Optional R2 preview
+  - Uploads review video and thumbnail to Cloudflare R2.
+  |
+  v
+Human review gate
+  - Nothing uploads until approved in the dashboard.
+  |
+  v
+Upload and follow-up distribution
+  - YouTube upload for the approved video.
+  - Linked teaser jobs can be scheduled for TikTok and Instagram.
+  |
+  v
+Analytics, usage tracking, and kill metrics
 ```
 
-`utils/config_loader.load_channel_config(slug)` returns the merged dict and
-injects the channel slug + credential paths under a `_channel` block so
-downstream modules (`upload_engine`, `r2_storage`, `tiktok_upload`, …) read
-the right files without knowing about the multi-channel layer.
+Every major stage is a Python module and returns a result dictionary with a
+`success` flag. The pipeline stops on the first hard failure. Missing optional
+credentials are handled as skips instead of crashes where that is safe.
 
-The dashboard has a channel switcher in the navbar; selecting a channel
-filters every page (Jobs, Templates, API usage, Analytics, Topic bank,
-Trends) to that channel's data. The **config and prompt editors write to
-the active channel's overlay** when one is selected, with a coloured badge
-showing scope (`editing reddit_stories overlay` vs `editing global
-defaults`).
+## Current Architecture
 
-### Content templates (Phase 13 — Block A)
+### Channels
 
-A template is a per-channel preset stored in the `content_templates` table.
-Each template defines:
+The root `config.json` is the global default. Each channel can override any
+setting with `channels/<slug>/config.json`; the merge is handled by
+`utils/config_loader.py`.
 
-| Field | Purpose |
+Checked-in channel overlays:
+
+| Channel slug | Purpose | Current role |
+|---|---|---|
+| `engineering_brief` | Engineering explainers and shorts | Default channel and dry-run target |
+| `reddit_stories` | Reddit-style long-form story videos plus teasers | First production target |
+
+The loader also supports optional per-channel prompt, asset, and credential
+paths:
+
+```text
+channels/<slug>/
+  config.json
+  prompts/                  optional prompt overrides
+  assets/
+    backgrounds/            optional background clips
+    music/                  optional music palette
+  client_secrets.json       local only, never commit
+  youtube_token.json        local only, never commit
+  tiktok_token.json         local only, never commit
+  instagram_token.json      local only, never commit
+```
+
+Only the config overlays are currently checked in. Runtime credentials and
+generated assets should stay local.
+
+### Content Templates
+
+Templates live in the SQLite `content_templates` table and can be managed from
+the `/templates` dashboard page or with `python main.py template ...`.
+
+A template controls:
+
+| Field | Meaning |
 |---|---|
-| `visual_mode` | `images` · `background_loop` · `long_form_ambient` |
-| `length_min_seconds` / `length_max_seconds` | The variation engine samples uniformly in this window |
-| `hook_style_pool` | JSON array of hook style names; one is picked per job |
-| `music_palette` | Folder under the channel's `assets/music/` |
-| `thumbnail_mode` | `frame_capture` · `text_template` · `off` |
-| `caption_mode` | `on` · `off` (sleep content skips burn-in) |
-| `dual_output` | When `true`, the long-form job auto-spawns a paired teaser short |
-| `active` | The variation engine only picks among active templates |
+| `visual_mode` | `images`, `background_loop`, or `long_form_ambient` |
+| `length_min_seconds`, `length_max_seconds` | Target length window for variation |
+| `hook_style_pool` | Hook styles to randomly choose from |
+| `music_palette` | Channel music folder or palette label |
+| `thumbnail_mode` | `frame_capture`, `text_template`, or `off` |
+| `caption_mode` | `on` or `off` |
+| `prompt_overrides` | JSON prompt override data |
+| `dual_output` | Whether to create a linked teaser job |
+| `active` | Whether it is eligible for random selection |
 
-Channels opt into the system by listing template names in
-`channels/<slug>/config.json` → `templates: [...]` (an allow-list). The
-script engine resolves the template before calling Claude, picks length +
-hook from its pools, and stamps `template_id` / `template_name` on the
-job row. The CLI accepts `--template <name>` to override the random pick.
+Channels can restrict random template selection by listing allowed template
+names in their overlay config under `templates`.
 
-### Cross-platform distribution (Block D)
+### Job Modes
 
-When a long-form job uploads successfully to YouTube, the linked teaser
-short's `scheduled_upload_at` is set to **+6 hours** (avoids platform
-duplicate-detection penalties). The 15-minute scheduler tick picks the
-teaser up and pushes it to TikTok via the Content Posting API v2 and to
-Instagram via the Graph API (`media` → poll → `media_publish`). The
-long-form YouTube URL is injected into both captions.
+VideoForge currently supports two script-generation modes:
 
-Per-platform enable flags live in `config.upload.tiktok` and
-`config.upload.instagram`; missing per-channel credential files cause the
-upload to skip cleanly rather than fail the pipeline.
+| Mode | Source | Review behavior |
+|---|---|---|
+| `standard` | A normal topic string | Flows through the normal video pipeline |
+| `reddit` | A Reddit candidate with `source_selftext` | Stops at `script_done` so the operator can choose or edit a hook |
 
-### Cloud preview + retention (Blocks F + G)
+Reddit mode can create a linked pair: one long-form story job and one teaser
+short. The long job stores `story_role = long`; the teaser stores
+`story_role = short`; both point at each other with `linked_job_id`.
 
-After captioning, the final MP4 and chosen thumbnail are uploaded to
-Cloudflare R2 under `previews/<channel>/<job_id>/`. The dashboard prefers
-the R2 URL over the local file path (badge: `R2 cloud` / `local`), so the
-operator can review and approve from a phone on cellular without exposing
-the home machine.
+### Storage
 
-Per-channel `r2.retention_days` (default `7`) sets the expiry timestamp.
-A nightly sweep at 03:00 deletes expired objects from R2 and nulls the
-`preview_url` on the job. When `r2.keep_after_youtube_upload` is `false`
-(default), the expiry is compressed to +24h after a successful YouTube
-upload so R2 storage doesn't accumulate.
+SQLite is the source of truth. `database.py` reads the path from
+`VIDEOFORGE_DB_PATH`; if that variable is blank, it uses `videoforge.db` in
+the project root. This makes Dropbox, Google Drive, or a future hosted database
+path possible without changing callers.
 
-### Database
+Important tables:
 
-SQLite. Path is `VIDEOFORGE_DB_PATH` from `.env` if set (Dropbox / Drive
-for cross-device sync), otherwise `videoforge.db` in the project root.
-Tables: `channels`, `jobs`, `analytics`, `trend_scans`, `priority_alerts`,
-`topic_bank`, `content_templates`, `api_usage`, `api_usage_daily`,
-`r2_objects`. Schema migrations are idempotent on every startup.
-
-Job status flow:
-```
-queued → scripting → script_done (Reddit hook gate) → voiced → imaging →
-assembling → captioning → metadata → review → uploading →
-scheduled_upload → posted   (or → failed at any point)
-```
-
----
-
-## Tech stack
-
-| Layer | Technology |
+| Table | Purpose |
 |---|---|
-| Script generation | Anthropic Claude (`claude-sonnet-4-6` by default; configurable) |
-| Voice | ElevenLabs · OpenAI TTS · Kokoro (local, zero-cost) — selected per channel |
-| Images | Leonardo.AI |
-| Captioning | faster-whisper (word-level timestamps) |
-| Video assembly | MoviePy 2.x + ffmpeg |
-| Web dashboard | Flask + Jinja templates + vanilla JS |
-| Database | SQLite (migration path to Postgres in Phase 14) |
-| Scheduling | APScheduler |
-| Trend monitoring | pytrends (Google Trends) |
-| Reddit ingestion | PRAW |
-| Cloud storage | Cloudflare R2 via boto3 (S3-compatible) |
-| Uploads | YouTube Data API v3 · TikTok Content Posting API v2 · Instagram Graph API v19 |
-| Analytics | YouTube Analytics API v2 + manual CTR/CSV import |
+| `channels` | Channel registry |
+| `jobs` | Every video through the pipeline |
+| `analytics` | YouTube/TikTok stats and manual CTR/import fields |
+| `topic_bank` | Manual, trend, comment-mined, and Reddit candidate topics |
+| `trend_scans`, `priority_alerts` | Google Trends monitoring and fast-track alerts |
+| `content_templates` | Per-channel template presets |
+| `api_usage`, `api_usage_daily` | Provider usage and estimated cost tracking |
+| `r2_objects` | Cloud preview objects and lifecycle state |
 
-> `requirements.txt` still lists `openai-whisper` for historical reasons; the
-> caption engine uses `faster-whisper`. Both work; faster-whisper is the
-> active import.
+Generated files are written under `output/`. Logs are written under `logs/`.
+Successful upload archives are copied into `archive/<channel>/<job>/` by
+`modules/upload_engine.py`; treat that folder as publish artifacts and review
+before committing anything from it.
 
----
+### Status Flow
 
-## Setup
+Common job statuses:
 
-### Requirements
-
-- Python 3.10+
-- ffmpeg on `PATH` (MoviePy + faster-whisper need it)
-- API keys for whichever stages you want to actually run (everything else
-  skips gracefully)
-
-### Install
-
-```bash
-git clone https://github.com/JordanTrpeski/VideoForge.git
-cd VideoForge
-pip install -r requirements.txt
-cp .env.example .env
+```text
+queued
+  -> scripting
+  -> script_done      # Reddit hook gate
+  -> voiced
+  -> imaging
+  -> assembling
+  -> captioning
+  -> metadata
+  -> review
+  -> uploading
+  -> scheduled_upload # linked teaser waiting for TikTok/Instagram fan-out
+  -> posted
 ```
 
-### Environment variables
+Jobs can also become `failed` or `archived`.
 
-`.env.example` lists every key. The system checks presence at runtime — if
-a key is missing for a stage, that stage logs a clear skip message and the
-pipeline continues.
+## Project Map
 
-```env
-# Always required
-ANTHROPIC_API_KEY=
-FLASK_SECRET_KEY=                # python -c "import secrets; print(secrets.token_hex(32))"
+```text
+VideoForge/
+  app.py                         Flask dashboard
+  main.py                        CLI entry point
+  database.py                    SQLite schema, migrations, and queries
+  scheduler.py                   APScheduler jobs
+  webhook.py                     Make.com/new-topic webhook
+  config.json                    Global defaults
+  requirements.txt               Python dependencies
+  AGENTS.md                      Local build instructions and roadmap notes
+  ROADMAP.md.txt                 Launch and future-phase plan
+  PHASE_14_NOTES.md.txt          Deferred server-migration notes
 
-# Voice — pick at least one
-ELEVENLABS_API_KEY=
-ELEVENLABS_VOICE_ID=
-OPENAI_API_KEY=
-# Kokoro is local-only — no key required
+  channels/
+    engineering_brief/config.json
+    reddit_stories/config.json
 
-# Images (only needed for visual_mode = images)
-LEONARDO_API_KEY=
+  modules/
+    script_engine.py             Claude script/rewrite generation
+    voice_engine.py              ElevenLabs/OpenAI/Kokoro TTS
+    image_engine.py              Leonardo image generation
+    assembly_engine.py           MoviePy video assembly
+    caption_engine.py            faster-whisper captions
+    metadata_engine.py           Claude metadata generation
+    thumbnail_engine.py          Thumbnail variants
+    upload_engine.py             YouTube/TikTok upload and permanent archive
+    tiktok_upload.py             Scheduled teaser upload to TikTok
+    instagram_upload.py          Scheduled teaser upload to Instagram
+    r2_storage.py                Cloudflare R2 preview uploads
+    analytics_engine.py          YouTube/TikTok analytics pulls
+    kill_metrics.py              v15/v30/d60 verdict logic
+    trend_monitor.py             Google Trends priority alerts
+    similarity_engine.py         Topic similarity checks
+    research_engine.py           Topic scoring
+    comment_miner.py             YouTube comment mining
+    reddit_engine.py             Reddit story candidate scanner
 
-# Uploads (each channel can have its own — see channels/<slug>/)
-TIKTOK_CLIENT_KEY=
-TIKTOK_CLIENT_SECRET=
-TIKTOK_ACCESS_TOKEN=
-YOUTUBE_CLIENT_SECRETS_FILE=client_secrets.json
+  utils/
+    config_loader.py             Global + channel config merge
+    template_engine.py           Template selection and variation
+    usage_tracker.py             API usage/cost rows
+    logger.py                    Shared logging setup
 
-# Reddit story ingestion
-REDDIT_CLIENT_ID=
-REDDIT_CLIENT_SECRET=
-REDDIT_USER_AGENT=
-
-# Cloudflare R2 (Block F — cloud preview)
-R2_ACCOUNT_ID=
-R2_ACCESS_KEY=
-R2_SECRET=
-R2_BUCKET=
-
-# Optional
-VIDEOFORGE_DB_PATH=              # Path to a Dropbox/Drive file for cross-device sync
-FLASK_PORT=5000
+  templates/                     Flask/Jinja dashboard pages
+  prompts/                       Global prompt templates
+  assets/                        Local visual/audio source assets
+  tests/                         Connectivity checks
 ```
 
-### Start the dashboard
+## Dashboard
+
+Run the dashboard locally:
 
 ```bash
 python app.py
-# → http://localhost:5000
 ```
 
-The dashboard registers the APScheduler background jobs on startup
-(per-channel batch runs, weekly analytics pull, comment mining, calendar
-auto-fill, the 15-minute scheduled-upload sweep, nightly usage rollup at
-02:00, and the R2 retention sweep at 03:00).
+Default URL: `http://localhost:5000`
 
-### Or run from the CLI
+Main pages:
+
+| Route | Purpose |
+|---|---|
+| `/` | Overview, live pipeline state, review gate, alerts, kill metrics |
+| `/jobs` | Job queue |
+| `/jobs/<id>` | Script, video preview, thumbnail variants, linked job, logs, retry controls |
+| `/jobs/new` | Single and bulk job creation |
+| `/templates` | Content template CRUD |
+| `/config` | Config editor, scoped to selected channel when applicable |
+| `/prompts` | Prompt editor and prompt test endpoint |
+| `/logs` | Filtered live logs |
+| `/analytics` | Analytics, score accuracy, kill metrics |
+| `/api-usage` | Provider usage, estimated cost, R2 storage summary |
+| `/health` | API health and TikTok re-auth |
+| `/research/trends` | Trend scanner, priority alerts, fast-track controls |
+| `/research/topics` | Topic bank, scoring, Reddit candidate approval |
+
+The navbar has a channel switcher. When a channel is selected, most pages and
+editor writes are scoped to that channel.
+
+## CLI
+
+The CLI is defined in `main.py`.
 
 ```bash
-# Full pipeline for one topic on a specific channel + template
-python main.py pipeline "A roommate who never paid rent" \
-    --channel reddit_stories --template narrative
+# Health and status
+python main.py test-connections
+python main.py list-channels
+python main.py list-jobs --channel reddit_stories
+python main.py status 001
 
-# Or the staged commands
-python main.py generate-script "Why bridges sway" --channel engineering_brief
+# Full pipeline for one topic
+python main.py pipeline "Why phone chargers get warm" --channel engineering_brief --bucket elec
+
+# Full Reddit-style pipeline with a template override
+python main.py pipeline "A roommate who never paid rent" --channel reddit_stories --bucket reddit --template narrative
+
+# Run individual stages
+python main.py generate-script "Why bridges sway" --channel engineering_brief --bucket infra
 python main.py generate-voice 001
+python main.py generate-images 001
 python main.py assemble 001
 python main.py add-captions 001
 python main.py generate-metadata 001
 python main.py generate-thumbnail 001
 python main.py upload 001
 
-# Batch the queue
+# Queue processing
 python main.py batch --count 5 --channel reddit_stories
 
-# Topic discovery
+# Research and topic bank
 python main.py scan-trends
+python main.py list-alerts
+python main.py fast-track --alert-id 1 --channel engineering_brief
 python main.py scan-reddit --subs tifu,AmItheAsshole --min-upvotes 2000
+python main.py add-topic "Why skyscrapers sway in the wind" --bucket infra --channel engineering_brief
+python main.py score-topic "Why EV batteries catch fire" --bucket vehicle
+python main.py score-unscored --limit 20
 python main.py mine-comments
+python main.py fill-calendar --n 5
+python main.py export-topics --output topics_export.csv
 
-# Templates
-python main.py template list
-python main.py template create --channel reddit_stories --name narrative \
-    --visual-mode background_loop --length-min 480 --length-max 720 \
-    --hook-pool shocking_revelation,unexpected_twist,dramatic_opening \
-    --dual-output
-
-# Health
-python main.py test-connections
+# Channel and template management
+python main.py create-channel sleep_lore "Sleep Lore" --niche "ambient mythology" --format single_narrator
+python main.py template list --channel reddit_stories
+python main.py template create --channel reddit_stories --name narrative --visual-mode background_loop --length-min 480 --length-max 720 --hook-pool shocking_revelation,unexpected_twist --dual-output
+python main.py template clone --id 1 --name narrative_alt
+python main.py template activate --id 1
+python main.py template deactivate --id 1
+python main.py template delete --id 1
 ```
 
----
+## Setup
 
-## Channel configuration
+### Requirements
 
-### The overlay model
+- Python 3.10+
+- ffmpeg and ffprobe on `PATH`
+- API credentials only for the providers you intend to use
 
-`config.json` at the repo root is the global default — every value can be
-overridden per channel by a deep-merged overlay at
-`channels/<slug>/config.json`. The merged dict is what every pipeline module
-receives.
-
-Recommended per-channel keys:
-
-```jsonc
-{
-  "channel":  { "name": "Reddit Stories", "platforms": [...] },
-  "pipeline": { "visual_mode": "background_loop" },
-  "voice":    { "provider": "elevenlabs", "voice_id": "<channel-locked id>" },
-  "templates": ["narrative"],                   // allow-list (Block A)
-  "r2": {
-    "retention_days": 7,
-    "keep_after_youtube_upload": false
-  },
-  "usage": {
-    "monthly_budget_cents": { "claude": 500, "elevenlabs": 1000 }
-  },
-  "upload": { "tiktok": true, "instagram": true },
-  "metadata": { "description_skeletons": [...] },
-  "thumbnail": { "mode": "text_template", "text_template": {...} }
-}
-```
-
-### Adding a new channel
+Install Python dependencies:
 
 ```bash
-python main.py create-channel sleep_lore "Sleep Lore" \
-    --niche "ambient mythology" --format single_narrator
+pip install -r requirements.txt
 ```
 
-This scaffolds the directory tree, registers the channel in the `channels`
-table, and gives you a minimal `config.json` overlay to fill in. Add
-templates via the dashboard at `/templates` or `python main.py template
-create ...`. Drop platform credential JSON files into the channel directory
-(`youtube_token.json`, `tiktok_token.json`, `instagram_token.json`); the
-upload modules pick them up automatically.
+Caption note: `modules/caption_engine.py` imports `faster_whisper`. The current
+`requirements.txt` still includes `openai-whisper` from the earlier build. If
+you run the caption stage, install `faster-whisper` in the environment as well.
 
-### Dashboard pages
+Kokoro note: local TTS support is optional. Install `kokoro` and `soundfile`
+only if a channel uses `voice.provider = "kokoro"`.
 
-| URL | Purpose |
+### Environment
+
+Create a local `.env` from the template:
+
+```bash
+copy .env.example .env
+```
+
+Do not commit `.env`. The code loads secrets with `python-dotenv` and reads
+keys at runtime.
+
+Key groups used by the code:
+
+| Group | Variables |
 |---|---|
-| `/` | Pipeline status, review gate, kill-metrics calendar |
-| `/jobs`, `/jobs/<id>` | Queue + detail (script, video, logs, story-pair review) |
-| `/jobs/new` | New job form, bulk add |
-| `/templates` | Content templates CRUD per channel (Block A) |
-| `/config` | Config editor — channel-scoped when a channel is selected (Block E) |
-| `/prompts` | Prompt editor — same scoping rules |
-| `/research/trends`, `/research/topics` | Google Trends alerts + scored topic bank |
-| `/api-usage` | Per-channel × per-provider cost view + R2 storage (Blocks B + G) |
-| `/analytics` | Views, retention, CTR, kill-metric verdicts |
-| `/health` | Live status + latency for each external API |
-| `/logs` | Live log stream, filterable by level / module / job |
+| Claude | `ANTHROPIC_API_KEY` |
+| Voice | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `OPENAI_API_KEY` |
+| Images | `LEONARDO_API_KEY` |
+| Reddit | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_USER_AGENT` |
+| YouTube | `YOUTUBE_CLIENT_SECRETS_FILE` or channel-local `client_secrets.json` |
+| TikTok | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, token files |
+| Cloudflare R2 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY`, `R2_SECRET`, `R2_BUCKET` |
+| Flask | `FLASK_SECRET_KEY`, `FLASK_PORT` |
+| Database sync | `VIDEOFORGE_DB_PATH` |
 
----
+Per-channel OAuth/token JSON files belong in `channels/<slug>/` and should
+never be committed.
 
-## Operating philosophy
+## External Services
 
-**Editorial gate is real.** No video uploads without a human clicking
-Approve. The dashboard makes the review trivial — script + thumbnail + a
-10-second preview from R2. The cost of a bad upload (channel strike,
-audience trust) is permanent; the cost of a 30-second review is not. If
-the gate ever slips, kill the weakest channel before scaling.
-
-**Kill metrics, not vibes.** Every posted video gets graded at v15 (15-min
-checkpoint), v30, and d60 against per-channel CTR / retention / watch-hour
-thresholds. Verdicts (`ON TRACK` / `WARN` / `KILL-REVIEW` / `INSUFFICIENT
-DATA`) appear on the dashboard calendar. The d60 review is a hard
-calendar event — non-negotiable, scheduled in advance.
-
-**Cost discipline.** The whole stack runs ~$10–25/month total across three
-channels. Defaults are biased toward zero-cost providers (Kokoro instead of
-ElevenLabs for long-form; R2 free tier with 7-day retention; SQLite
-instead of hosted Postgres until Phase 14 ships). The `/api-usage` page
-gives month-to-date cost per channel × provider and fires an 80%-of-budget
-amber alert from per-channel monthly budgets.
-
-**Inauthentic content policy defense.** YouTube's inauthentic-content
-policy is the existential risk for AI-generated channels. Defense is
-*editorial fingerprint per channel*: distinct voice, distinct visual
-language, distinct content category, and human judgment on every video.
-Channels run on separate Google accounts so a single strike doesn't
-cascade. Content quality rules — original rewrites only (Reddit), no
-copyrighted footage, no medical/political claims — are enforced in the
-prompts and in the review gate, not as an afterthought.
-
-**Human in the loop, by design.** The pipeline can produce a video without
-a human, but it can't *publish* one. Approval is the moment the system
-hands control back. Everything upstream is recoverable; everything
-downstream is a public record. The review gate is where that line sits.
-
----
-
-## Project status
-
-### Complete (Phases 1–13)
-
-| Phase | Scope |
+| Capability | Provider/module |
 |---|---|
-| 1–8 | Core seven-stage pipeline + analytics pull |
-| 9 | Flask dashboard at `localhost:5000` |
-| 10 | APScheduler weekly batches + analytics + comment mining + calendar fill |
-| 11.v1 | Device sync · priority alerts · similarity detection · topic bank |
-| 11.v2 | Research scoring · comment mining · auto-fill calendar · score accuracy feedback |
-| 12 | Multi-channel architecture · per-channel overlay · dashboard channel switcher |
-| Reddit Stories | PRAW scraper · rewrite prompt · background-loop visual mode · hook selection · multi-provider TTS |
-| Analytics + kill metrics | YouTube Analytics v2 · CTR import · v15/v30/d60 verdicts |
-| Dual output | Long + teaser pair · YouTube URL injection · scheduled upload |
-| Compliance pack | Thumbnail picker · metadata skeletons · title uniqueness · AI disclosure · permanent archive |
-| **13** | **Templates · API usage tracking · long-form ambient · TikTok + IG upload · channel-aware editors · R2 cloud preview · R2 lifecycle** |
+| Script and metadata generation | Anthropic Claude via `anthropic` |
+| Voice generation | ElevenLabs, OpenAI TTS, or Kokoro |
+| Image generation | Leonardo.AI |
+| Captions | faster-whisper |
+| Video assembly | MoviePy and ffmpeg |
+| Reddit story mining | PRAW |
+| Trend scanning | pytrends |
+| Uploads | YouTube Data API, TikTok Content Posting API, Instagram Graph API |
+| Analytics | YouTube Analytics API plus manual/CSV CTR import |
+| Cloud preview | Cloudflare R2 via boto3-compatible S3 client |
 
-The Phase 13 audit ran read-only against 34 line-item pass criteria across
-the seven blocks. Two items are tracked as nice-to-have gaps deferred to
-Phase 14; nothing on the launch path is missing.
+Most provider integrations skip gracefully when credentials are absent. The
+script and metadata stages require a Claude key because they are the core
+generation steps.
 
-### Deferred to Phase 14
+## Scheduler
 
-- Instrumentation gap: `r2.delete_object` calls (retention sweep) and
-  YouTube OAuth token refreshes are not tracked in `api_usage`. Both are
-  zero or near-zero cost, so the reported month-to-date totals are
-  accurate within rounding.
-- Server migration: the whole pipeline runs on a local home machine. Phase
-  14 will move it to a VPS with HTTPS, 24/7 scheduling, and a hosted
-  Postgres database. Triggered when channels 1–3 are all running and the
-  home machine becomes the constraint.
+`scheduler.py` starts with the Flask app and handles recurring work:
 
-### Channels
+- queued batch runs
+- weekly analytics pulls
+- YouTube comment mining
+- topic calendar auto-fill
+- scheduled teaser uploads every 15 minutes
+- nightly API usage rollup
+- nightly R2 retention cleanup
 
-| Channel | Format | Voice | Status |
-|---|---|---|---|
-| The Engineering Brief | Single narrator, 60–90s shorts | ElevenLabs | Dry-run target only; private + abandoned once Channel 1 launches |
-| **Reddit Stories** | First-person drama, 20–40 min long-form + 45–60s teaser | Kokoro (female, locked) | Scaffold complete; launching after dry run |
-| Dark Psychology / Philosophy | Essay format, 8–15 min long-form | Kokoro (male, calm/intellectual) | Planned month 4–5 |
-| Sleep Lore | Long-form ambient mythology, 1–3 hr | Kokoro (neutral calm) | Planned month 8–9 |
+The scheduled upload loop picks up teaser jobs with
+`status = scheduled_upload` and `scheduled_upload_at <= now`, then calls the
+TikTok and Instagram upload modules.
 
-No channel has shipped video at production cadence yet. The launch sequence
-is in `ROADMAP.md`.
+## Safety and Review Model
 
----
+Publishing is intentionally human-gated. The system can generate assets
+automatically, but upload only happens after approval from the dashboard or an
+explicit CLI upload command.
 
-## Roadmap
+Safety rules baked into the project:
 
-See [ROADMAP.md](ROADMAP.md) for the full plan: channel launch sequence,
-Phase 14 (server migration), Phase 15 (intelligence layer — self-improving
-score weights, hook A/B testing, series detection), and future channel
-candidates after the first three prove out.
-
----
+- Secrets stay in `.env` or local token JSON files.
+- `.env`, token files, generated output, logs, and database files are ignored.
+- Jobs stop on hard stage failures and store `error_module` plus
+  `error_message`.
+- Missing optional API keys skip the affected integration instead of exposing
+  secrets or crashing unrelated stages.
+- Review pages show script, preview, thumbnail, metadata, linked teaser status,
+  and logs before upload.
+- Reddit stories keep the raw source story in the job row for rewrite context;
+  do not treat the database as public.
 
 ## Logging
 
-Every module writes three log streams:
+All modules use `utils/logger.py` and write to:
 
+```text
+logs/<module>.log    module-specific DEBUG+
+logs/main.log        shared INFO+
+logs/errors.log      shared ERROR+
 ```
-logs/<module>.log    DEBUG+    module-scoped, detailed
-logs/main.log        INFO+     combined pipeline view
-logs/errors.log      ERROR+    just errors with full tracebacks
+
+Log line shape:
+
+```text
+2026-04-10 14:32:01 | script_engine | INFO | [JOB 001] message
 ```
 
-Format: `2026-04-10 14:32:01 | script_engine | INFO | [JOB 001] message`.
+The dashboard `/logs` page can filter by module, level, and job id.
 
-View live and filtered in the dashboard at `/logs`.
+## Roadmap
 
----
+See `ROADMAP.md.txt` for the launch plan and future phases.
 
-## Contributing
+Current deferred items are tracked in `PHASE_14_NOTES.md.txt`:
 
-This is a single-maintainer project right now and isn't accepting drive-by
-contributions. If you've forked it and built something interesting, open an
-issue describing what you did — happy to talk.
+- VPS/HTTPS/PostgreSQL migration when local operation becomes the bottleneck.
+- Instrumentation refinements for zero-cost R2 deletes and OAuth refreshes.
+- Future intelligence layer: self-improving score weights, hook and thumbnail
+  testing, series detection, competitor gap analysis, and seasonal scheduling.
 
-If you've spotted a bug or have a design question about the architecture
-(channel overlays, the template system, the kill-metrics pipeline), an
-issue is the right place.
+## Notes for Future Maintainers
 
-## License
+- `AGENTS.md` and `CLAUDE.md` preserve the original phase-by-phase build brief.
+  They are useful history, but this README is the current operational map.
+- Keep new tunables in `config.json` or channel overlays, not hardcoded in
+  modules.
+- Keep provider credentials and OAuth tokens out of Git.
+- Before pushing, run a staged secret scan if you touched configs, docs, upload
+  code, or channel directories.
 
-See `LICENSE`.
