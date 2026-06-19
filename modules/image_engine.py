@@ -536,6 +536,16 @@ def generate_images(job_id: str, config: dict) -> dict:
                 img_num=i
             )
 
+            # Block B — record one Leonardo image request per prompt
+            try:
+                from utils.usage_tracker import track as _usage_track
+                from database import get_job as _get_job
+                _ch = (_get_job(job_id) or {}).get('channel_id')
+                _usage_track('leonardo', 'generate', units=1,
+                             channel_id=_ch, job_id=job_id, config=config)
+            except Exception:
+                pass
+
             # Step 3: Download first image
             _download_image(
                 url=image_urls[0],

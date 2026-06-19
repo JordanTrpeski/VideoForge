@@ -294,7 +294,9 @@ def _call_claude_with_retry(
     temperature: float,
     job_id: str,
     max_retries: int = 3,
-    backoff_seconds: float = 5.0
+    backoff_seconds: float = 5.0,
+    channel_id: str = None,
+    config: dict = None,
 ) -> str:
     """
     Call the Claude Messages API with exponential backoff retry on transient errors.
@@ -333,6 +335,15 @@ def _call_claude_with_retry(
                 f"[JOB {job_id}] Claude API call succeeded — "
                 f"response time: {elapsed:.2f}s, tokens: {tokens_used}"
             )
+            # Block B — usage tracking
+            try:
+                from utils.usage_tracker import track as _usage_track
+                _usage_track(
+                    'claude', 'messages.create', units=tokens_used,
+                    channel_id=channel_id, job_id=job_id, config=config,
+                )
+            except Exception:
+                pass
             return response.content[0].text
 
         except anthropic.RateLimitError as e:
@@ -369,21 +380,45 @@ def _call_claude_with_retry(
     raise Exception(f"Claude API call failed after {max_retries} attempts")
 
 
-def _pick_variation(mode: str, config: dict, job_id: str) -> tuple:
+def _pick_variation(
+    mode: str,
+    config: dict,
+    job_id: str,
+    template: dict | None = None,
+) -> tuple:
     """
-    Randomly select a target length and hook style for this job from the
-    variation config, enforcing the no-consecutive-identical-pair rule.
+    Randomly select a target length and hook style for this job.
+
+    When a Phase 13 Block A template is passed in, its length window and hook
+    style pool win (template wraps the legacy variation block). Otherwise the
+    legacy global variation.shorts / variation.reddit_long_form pools are used.
 
     Reads config fresh on every call (hot-reload safe — config is passed in).
 
     Args:
-        mode (str):    'standard' or 'reddit' — selects the variation sub-block.
-        config (dict): Loaded config.json contents.
-        job_id (str):  Current job ID (excluded when fetching the previous pair).
+        mode (str):     'standard' or 'reddit' — selects the variation sub-block.
+        config (dict):  Loaded config dict.
+        job_id (str):   Current job ID (excluded when fetching the previous pair).
+        template (dict | None): Resolved content_templates row, or None.
 
     Returns:
         tuple: (picked_length_seconds: int, picked_hook_style: str)
     """
+    if template:
+        from utils.template_engine import pick_length_and_hook
+        picked_length, picked_hook = pick_length_and_hook(template)
+        # Use a 5-second jitter to avoid identical lengths back-to-back.
+        last_length, last_hook = get_last_job_variation(exclude_job_id=job_id)
+        if (picked_length, picked_hook) == (last_length, last_hook) \
+                and template.get('length_max_seconds', 0) > template.get('length_min_seconds', 0):
+            picked_length, picked_hook = pick_length_and_hook(template)
+        logger.info(
+            f"[JOB {job_id}] Variation (template) — template='{template['name']}', "
+            f"length: {picked_length}s, hook: {picked_hook} "
+            f"(previous: {last_length}s / {last_hook})"
+        )
+        return picked_length, picked_hook
+
     var_key = 'reddit_long_form' if mode == 'reddit' else 'shorts'
     var_cfg = config['variation'][var_key]
     lengths: list = var_cfg['length_targets_seconds']
@@ -523,6 +558,7 @@ def generate_script(
     bucket: str = 'elec',
     hook_style: str = None,
     mode: str = None,
+    template_name: str = None,
 ) -> dict:
     """
     Generate a structured video script using the Claude API.
@@ -581,16 +617,31 @@ def generate_script(
 
     try:
         # ------------------------------------------------------------------ #
+        # Template resolution (Block A) — wraps the variation pick             #
+        # ------------------------------------------------------------------ #
+        from utils.template_engine import resolve_template
+        channel_slug = (job or {}).get('channel_id') or config.get('default_channel') \
+            or 'engineering_brief'
+        # Honour explicit override from job row (set by CLI --template path)
+        if not template_name:
+            template_name = (job or {}).get('template_name') or None
+        template = resolve_template(channel_slug, template_name=template_name)
+
+        # ------------------------------------------------------------------ #
         # Variation pick — choose length and hook style for this job          #
         # ------------------------------------------------------------------ #
         picked_length = None
         picked_hook = hook_style
-        if config.get('variation'):
-            picked_length, picked_hook = _pick_variation(mode, config, job_id)
+        if template or config.get('variation'):
+            picked_length, picked_hook = _pick_variation(mode, config, job_id, template=template)
             update_job_field(job_id, 'picked_length_seconds', picked_length)
             update_job_field(job_id, 'picked_hook_style', picked_hook)
             # Use the variation-picked hook as the effective hook for this run
             hook_style = picked_hook
+
+        if template:
+            update_job_field(job_id, 'template_id', template['id'])
+            update_job_field(job_id, 'template_name', template['name'])
 
         # Load and render the prompt for this mode
         if mode == 'reddit':
@@ -632,7 +683,9 @@ def generate_script(
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
-            job_id=job_id
+            job_id=job_id,
+            channel_id=channel_slug,
+            config=config,
         )
 
         # Parse and validate response
@@ -677,9 +730,12 @@ def generate_script(
             update_job_status(job_id, 'script_done')
             logger.info(f"[JOB {job_id}] Reddit script ready — awaiting hook selection (status: script_done)")
 
-            # Create the paired teaser (short) job if Claude included teaser_script
+            # Teaser creation is gated by template.dual_output (Block A). Older
+            # configs without templates fall back to the previous hard-coded
+            # behaviour (always-on for reddit) so existing flows don't regress.
+            dual_output_wanted = template['dual_output'] if template else True
             teaser_job_id = None
-            if 'teaser_script' in script_data:
+            if dual_output_wanted and 'teaser_script' in script_data:
                 story_id      = f"story_{job_id}"
                 teaser_job_id = _create_teaser_job(job_id, script_data, topic, story_id)
                 if teaser_job_id:
@@ -687,6 +743,11 @@ def generate_script(
                     update_job_field(job_id, 'story_id',      story_id)
                     update_job_field(job_id, 'story_role',    'long')
                     update_job_field(job_id, 'linked_job_id', teaser_job_id)
+            elif not dual_output_wanted and 'teaser_script' in script_data:
+                logger.info(
+                    f"[JOB {job_id}] Template '{template['name']}' has dual_output=false "
+                    "— skipping teaser job creation"
+                )
         else:
             update_job_status(job_id, 'voiced')  # next stage is voice_engine
 

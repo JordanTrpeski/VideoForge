@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block title %}Templates — VideoForge{% endblock %}
+{% block content %}
+
+<div class="flex items-center justify-between mb-5">
+    <div>
+        <h1 class="text-xl font-semibold text-slate-100">Content templates</h1>
+        <p class="text-xs mt-0.5" style="color:var(--muted)">
+            Per-channel presets the variation engine picks between. Each template
+            defines visual mode, length window, hook pool, music palette,
+            thumbnail mode, caption mode, and the dual-output flag.
+        </p>
+    </div>
+    <button type="button" class="btn btn-primary text-sm" onclick="toggleNewForm()">+ New template</button>
+</div>
+
+<!-- New template form (hidden by default) -->
+<div id="new-template-form" class="card rounded-xl p-5 mb-5 hidden">
+    <h2 class="font-semibold text-white text-sm mb-4">Create template</h2>
+    <form method="post" action="/templates/new" class="grid grid-cols-2 gap-3">
+        <div>
+            <label class="block text-xs text-slate-400 mb-1">Channel slug</label>
+            <input type="text" name="channel_id" required class="inp text-xs"
+                   value="{{ channel_filter or '' }}" placeholder="reddit_stories">
+        </div>
+        <div>
+            <label class="block text-xs text-slate-400 mb-1">Name</label>
+            <input type="text" name="name" required class="inp text-xs"
+                   placeholder="narrative">
+        </div>
+        <div>
+            <label class="block text-xs text-slate-400 mb-1">Visual mode</label>
+            <select name="visual_mode" class="inp text-xs">
+                <option value="images">images</option>
+                <option value="background_loop">background_loop</option>
+                <option value="long_form_ambient">long_form_ambient</option>
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-slate-400 mb-1">Thumbnail mode</label>
+            <select name="thumbnail_mode" class="inp text-xs">
+                <option value="frame_capture">frame_capture</option>
+                <option value="text_template">text_template</option>
+                <option value="off">off</option>
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-slate-400 mb-1">Length min (s)</label>
+            <input type="number" name="length_min_seconds" value="55" class="inp text-xs">
+        </div>
+        <div>
+            <label class="block text-xs text-slate-400 mb-1">Length max (s)</label>
+            <input type="number" name="length_max_seconds" value="90" class="inp text-xs">
+        </div>
+        <div>
+            <label class="block text-xs text-slate-400 mb-1">Caption mode</label>
+            <select name="caption_mode" class="inp text-xs">
+                <option value="on">on</option>
+                <option value="off">off</option>
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-slate-400 mb-1">Music palette</label>
+            <input type="text" name="music_palette" class="inp text-xs"
+                   placeholder="folder name under assets/music/">
+        </div>
+        <div class="col-span-2">
+            <label class="block text-xs text-slate-400 mb-1">Hook style pool (comma-separated)</label>
+            <input type="text" name="hook_pool" class="inp text-xs"
+                   placeholder="shocking_revelation, unexpected_twist, dramatic_opening">
+        </div>
+        <label class="flex items-center gap-2 col-span-2 text-xs text-slate-300">
+            <input type="checkbox" name="dual_output" value="1">
+            dual_output (generate paired teaser short)
+        </label>
+        <div class="col-span-2 flex gap-2">
+            <button type="submit" class="btn btn-success text-xs">Create</button>
+            <button type="button" class="btn btn-ghost text-xs" onclick="toggleNewForm()">Cancel</button>
+        </div>
+    </form>
+</div>
+
+<!-- Existing templates -->
+{% if templates %}
+<div class="space-y-3">
+    {% for t in templates %}
+    <div class="card rounded-xl p-4">
+        <div class="flex items-start justify-between gap-3 mb-2">
+            <div class="min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-slate-200 text-sm font-semibold">{{ t.name }}</span>
+                    <span class="badge badge-gray">{{ t.channel_id }}</span>
+                    <span class="badge {% if t.active %}badge-green{% else %}badge-gray{% endif %}">
+                        {% if t.active %}active{% else %}paused{% endif %}
+                    </span>
+                    {% if t.dual_output %}
+                    <span class="badge badge-amber">dual_output</span>
+                    {% endif %}
+                </div>
+                <div class="text-xs mt-1 flex flex-wrap gap-3" style="color:var(--muted)">
+                    <span>vmode: <span class="text-slate-300">{{ t.visual_mode }}</span></span>
+                    <span>len: <span class="text-slate-300">{{ t.length_min_seconds }}–{{ t.length_max_seconds }}s</span></span>
+                    <span>cap: <span class="text-slate-300">{{ t.caption_mode }}</span></span>
+                    <span>thumb: <span class="text-slate-300">{{ t.thumbnail_mode }}</span></span>
+                    {% if t.music_palette %}
+                    <span>music: <span class="text-slate-300">{{ t.music_palette }}</span></span>
+                    {% endif %}
+                </div>
+                {% if t.hook_style_pool %}
+                <div class="text-xs mt-1" style="color:var(--muted)">
+                    hooks: <span class="text-slate-300">{{ t.hook_style_pool | join(', ') }}</span>
+                </div>
+                {% endif %}
+            </div>
+            <div class="flex items-center gap-1 flex-shrink-0">
+                <form method="post" action="/templates/{{ t.id }}/toggle" class="inline">
+                    <button class="btn btn-ghost text-xs">
+                        {% if t.active %}Deactivate{% else %}Activate{% endif %}
+                    </button>
+                </form>
+                <form method="post" action="/templates/{{ t.id }}/clone" class="inline">
+                    <input type="hidden" name="name" value="{{ t.name }}_copy">
+                    <button class="btn btn-ghost text-xs">Clone</button>
+                </form>
+                <button type="button" class="btn btn-ghost text-xs"
+                        onclick="toggleEdit('{{ t.id }}')">Edit</button>
+                <form method="post" action="/templates/{{ t.id }}/delete" class="inline"
+                      onsubmit="return confirm('Delete template {{ t.name }}?');">
+                    <button class="btn btn-danger text-xs">Delete</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Edit form (hidden until toggled) -->
+        <div id="edit-{{ t.id }}" class="hidden mt-3 rounded p-3"
+             style="background:#0d1526;border:1px solid var(--border)">
+            <form method="post" action="/templates/{{ t.id }}/edit" class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Name</label>
+                    <input type="text" name="name" required class="inp text-xs"
+                           value="{{ t.name }}">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Visual mode</label>
+                    <select name="visual_mode" class="inp text-xs">
+                        {% for v in ['images','background_loop','long_form_ambient'] %}
+                        <option value="{{ v }}" {% if v == t.visual_mode %}selected{% endif %}>{{ v }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Length min (s)</label>
+                    <input type="number" name="length_min_seconds" value="{{ t.length_min_seconds }}" class="inp text-xs">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Length max (s)</label>
+                    <input type="number" name="length_max_seconds" value="{{ t.length_max_seconds }}" class="inp text-xs">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Caption mode</label>
+                    <select name="caption_mode" class="inp text-xs">
+                        <option value="on" {% if t.caption_mode == 'on' %}selected{% endif %}>on</option>
+                        <option value="off" {% if t.caption_mode == 'off' %}selected{% endif %}>off</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Thumbnail mode</label>
+                    <select name="thumbnail_mode" class="inp text-xs">
+                        {% for v in ['frame_capture','text_template','off'] %}
+                        <option value="{{ v }}" {% if v == t.thumbnail_mode %}selected{% endif %}>{{ v }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-span-2">
+                    <label class="block text-xs text-slate-400 mb-1">Music palette</label>
+                    <input type="text" name="music_palette" value="{{ t.music_palette }}" class="inp text-xs">
+                </div>
+                <div class="col-span-2">
+                    <label class="block text-xs text-slate-400 mb-1">Hook style pool (comma-separated)</label>
+                    <input type="text" name="hook_pool" class="inp text-xs"
+                           value="{{ t.hook_style_pool | join(', ') }}">
+                </div>
+                <label class="flex items-center gap-2 col-span-2 text-xs text-slate-300">
+                    <input type="checkbox" name="dual_output" value="1" {% if t.dual_output %}checked{% endif %}>
+                    dual_output
+                </label>
+                <div class="col-span-2 flex gap-2">
+                    <button type="submit" class="btn btn-success text-xs">Save</button>
+                    <button type="button" class="btn btn-ghost text-xs"
+                            onclick="toggleEdit('{{ t.id }}')">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="card rounded-xl p-8 text-center">
+    <p class="text-slate-400 text-sm">No templates yet. Click "+ New template" to create one.</p>
+</div>
+{% endif %}
+
+{% endblock %}
+{% block scripts %}
+<script>
+function toggleNewForm() {
+    document.getElementById('new-template-form').classList.toggle('hidden');
+}
+function toggleEdit(id) {
+    document.getElementById('edit-' + id).classList.toggle('hidden');
+}
+</script>
+{% endblock %}

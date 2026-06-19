@@ -492,6 +492,46 @@ def add_captions(job_id: str, config: dict) -> dict:
     stage_start = time.time()
     logger.info(f"[JOB {job_id}] Starting caption_engine")
 
+    # Block C — caption_mode='off' (template-driven) skips this stage entirely.
+    # Resolution order: explicit template caption_mode > config.captions.mode.
+    caption_mode = 'on'
+    try:
+        from database import get_job as _get_job, get_template as _get_template
+        _job = _get_job(job_id) or {}
+        if _job.get('template_id'):
+            _t = _get_template(int(_job['template_id']))
+            if _t:
+                caption_mode = (_t.get('caption_mode') or 'on').lower()
+    except Exception:
+        pass
+    caption_mode = config.get('captions', {}).get('mode', caption_mode) or caption_mode
+    if caption_mode == 'off':
+        import shutil
+        raw = Path(f'output/videos/{job_id}_raw.mp4')
+        if not raw.exists():
+            return {'success': False,
+                    'error': f'Raw video not found: {raw}. Run assemble first.'}
+        final_path = Path(f'output/videos/{job_id}_captioned.mp4')
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(raw), str(final_path))
+        logger.info(
+            f"[JOB {job_id}] caption_mode='off' — skipped burn-in, copied raw -> {final_path}"
+        )
+        try:
+            from database import update_job_field, update_job_status
+            update_job_field(job_id, 'final_video_path', str(final_path))
+            update_job_status(job_id, 'metadata')
+        except Exception:
+            pass
+        # Block F — same R2 hook applies even when caption burn-in is skipped
+        try:
+            from modules.r2_storage import upload_preview_for_job
+            upload_preview_for_job(job_id, config)
+        except Exception as exc:
+            logger.warning(f"[JOB {job_id}] R2 preview hook crashed (non-fatal): {exc}")
+        return {'success': True, 'output_path': str(final_path),
+                'caption_count': 0, 'skipped': False}
+
     try:
         cap_cfg = config['captions']
         vid_cfg = config['video']
@@ -617,6 +657,24 @@ def add_captions(job_id: str, config: dict) -> dict:
         # ----------------------------------------------------------------
         update_job_field(job_id, 'final_video_path', str(output_path))
         update_job_status(job_id, 'metadata')
+
+        # Block F — push video + thumbnail to R2 so the dashboard can stream
+        # it from anywhere. Non-fatal: on any failure the local path stays the
+        # source of truth and the dashboard falls back to it.
+        try:
+            from modules.r2_storage import upload_preview_for_job
+            r2_result = upload_preview_for_job(job_id, config)
+            if r2_result.get('success'):
+                logger.info(
+                    f"[JOB {job_id}] R2 preview ready — {r2_result.get('video_url')}"
+                )
+            elif r2_result.get('skipped'):
+                logger.info(f"[JOB {job_id}] R2 preview skipped — {r2_result.get('error')}")
+            else:
+                logger.warning(f"[JOB {job_id}] R2 preview upload failed (non-fatal): "
+                               f"{r2_result.get('error')}")
+        except Exception as exc:
+            logger.warning(f"[JOB {job_id}] R2 preview hook crashed (non-fatal): {exc}")
 
         elapsed = time.time() - stage_start
         logger.info(f"[JOB {job_id}] caption_engine COMPLETED in {elapsed:.1f}s")

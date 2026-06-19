@@ -197,6 +197,67 @@ def init_db() -> None:
                 dismissed_at    TEXT
             );
 
+            -- Phase 13 Block A: Content templates (per-channel variation pools)
+            CREATE TABLE IF NOT EXISTS content_templates (
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id           TEXT NOT NULL,
+                name                 TEXT NOT NULL,
+                visual_mode          TEXT DEFAULT 'images',
+                length_min_seconds   INTEGER DEFAULT 55,
+                length_max_seconds   INTEGER DEFAULT 90,
+                hook_style_pool      TEXT DEFAULT '[]',  -- JSON array
+                music_palette        TEXT DEFAULT '',
+                thumbnail_mode       TEXT DEFAULT 'frame_capture',
+                caption_mode         TEXT DEFAULT 'on',  -- 'on' | 'off' (Block C)
+                prompt_overrides     TEXT DEFAULT '{}',  -- JSON object
+                dual_output          INTEGER DEFAULT 0,
+                active               INTEGER DEFAULT 1,
+                created_at           TEXT DEFAULT (datetime('now')),
+                updated_at           TEXT DEFAULT (datetime('now')),
+                UNIQUE (channel_id, name)
+            );
+
+            -- Phase 13 Block B: Per-call API usage tracking
+            CREATE TABLE IF NOT EXISTS api_usage (
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id           TEXT,
+                job_id               TEXT,
+                provider             TEXT NOT NULL,
+                operation            TEXT NOT NULL,
+                units_used           INTEGER DEFAULT 0,
+                cost_estimate_cents  INTEGER DEFAULT 0,
+                timestamp            TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_api_usage_lookup
+                ON api_usage (channel_id, provider, timestamp);
+
+            CREATE TABLE IF NOT EXISTS api_usage_daily (
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                day                  TEXT NOT NULL,            -- YYYY-MM-DD
+                channel_id           TEXT,
+                provider             TEXT,
+                units_used           INTEGER DEFAULT 0,
+                cost_estimate_cents  INTEGER DEFAULT 0,
+                rolled_at            TEXT DEFAULT (datetime('now')),
+                UNIQUE (day, channel_id, provider)
+            );
+
+            -- Phase 13 Block F: R2 cloud assets (preview URLs + lifecycle)
+            CREATE TABLE IF NOT EXISTS r2_objects (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id          TEXT NOT NULL,
+                channel_id      TEXT,
+                kind            TEXT,                 -- 'video' | 'thumbnail'
+                bucket          TEXT,
+                key             TEXT NOT NULL,
+                url             TEXT,
+                size_bytes      INTEGER DEFAULT 0,
+                uploaded_at     TEXT DEFAULT (datetime('now')),
+                expires_at      TEXT,
+                deleted         INTEGER DEFAULT 0,
+                deleted_at      TEXT
+            );
+
             -- Phase 11.v1.D: Topic bank
             CREATE TABLE IF NOT EXISTS topic_bank (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -328,6 +389,9 @@ def update_job_field(job_id: str, field: str, value) -> None:
         'thumbnail_variant', 'disclosure_checklist_required', 'description_skeleton_index',
         # Reddit dedup — FIX 3
         'reddit_post_id',
+        # Phase 13 — templates / cloud preview
+        'template_id', 'template_name', 'preview_url', 'preview_thumb_url',
+        'preview_uploaded_at', 'preview_deleted_at',
     }
     if field not in allowed_fields:
         raise ValueError(f"Field '{field}' is not an allowed job column")
@@ -948,6 +1012,14 @@ def _run_migrations() -> None:
         # FIX 3 — track originating Reddit post ID on the job so dedup covers
         # posts that were approved+queued even if the topic_bank row is deleted
         "ALTER TABLE jobs ADD COLUMN reddit_post_id TEXT",
+        # Phase 13 Block A — template chosen for this job
+        "ALTER TABLE jobs ADD COLUMN template_id INTEGER",
+        "ALTER TABLE jobs ADD COLUMN template_name TEXT",
+        # Phase 13 Block F — cloud preview URLs and lifecycle timestamps
+        "ALTER TABLE jobs ADD COLUMN preview_url TEXT",
+        "ALTER TABLE jobs ADD COLUMN preview_thumb_url TEXT",
+        "ALTER TABLE jobs ADD COLUMN preview_uploaded_at TEXT",
+        "ALTER TABLE jobs ADD COLUMN preview_deleted_at TEXT",
     ]
     conn = get_connection()
     try:
@@ -1569,6 +1641,467 @@ def get_analytics_summary() -> dict:
                GROUP BY j.bucket"""
         ).fetchall()
         return {r['bucket']: dict(r) for r in rows}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 Block A — Content templates
+# ---------------------------------------------------------------------------
+
+def insert_template(
+    channel_id: str,
+    name: str,
+    visual_mode: str = 'images',
+    length_min_seconds: int = 55,
+    length_max_seconds: int = 90,
+    hook_style_pool: Optional[list] = None,
+    music_palette: str = '',
+    thumbnail_mode: str = 'frame_capture',
+    caption_mode: str = 'on',
+    prompt_overrides: Optional[dict] = None,
+    dual_output: bool = False,
+    active: bool = True,
+) -> int:
+    """
+    Insert a new content_templates row. JSON fields are serialised to text.
+
+    Args:
+        channel_id (str):           Owning channel slug.
+        name (str):                 Unique template name within the channel.
+        visual_mode (str):          'images' | 'background_loop' | 'long_form_ambient'.
+        length_min_seconds (int):   Lower bound for variation length pick.
+        length_max_seconds (int):   Upper bound for variation length pick.
+        hook_style_pool (list):     Allowed hook style strings.
+        music_palette (str):        Free-form name pointing at a music asset folder.
+        thumbnail_mode (str):       'frame_capture' | 'text_template' | 'off'.
+        caption_mode (str):         'on' | 'off' (Block C: sleep content skips captions).
+        prompt_overrides (dict):    Per-template prompt patches.
+        dual_output (bool):         Whether to also produce a teaser short.
+        active (bool):              Whether this template is in the rotation pool.
+
+    Returns:
+        int: New template id.
+    """
+    import json as _json
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            """INSERT INTO content_templates
+                   (channel_id, name, visual_mode,
+                    length_min_seconds, length_max_seconds,
+                    hook_style_pool, music_palette, thumbnail_mode, caption_mode,
+                    prompt_overrides, dual_output, active)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (channel_id, name, visual_mode,
+             int(length_min_seconds), int(length_max_seconds),
+             _json.dumps(hook_style_pool or []),
+             music_palette, thumbnail_mode, caption_mode,
+             _json.dumps(prompt_overrides or {}),
+             1 if dual_output else 0,
+             1 if active else 0),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_templates(channel_id: Optional[str] = None, active_only: bool = False) -> list:
+    """
+    Fetch content_templates rows, with JSON fields decoded.
+
+    Args:
+        channel_id (str | None): Filter to one channel, or None for all.
+        active_only (bool):      If True, only return active=1 rows.
+
+    Returns:
+        list[dict]: Templates with hook_style_pool and prompt_overrides decoded.
+    """
+    import json as _json
+    conn = get_connection()
+    try:
+        sql = "SELECT * FROM content_templates"
+        conds, params = [], []
+        if channel_id:
+            conds.append("channel_id = ?"); params.append(channel_id)
+        if active_only:
+            conds.append("active = 1")
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY channel_id, name"
+        rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+        for r in rows:
+            try:
+                r['hook_style_pool'] = _json.loads(r.get('hook_style_pool') or '[]')
+            except Exception:
+                r['hook_style_pool'] = []
+            try:
+                r['prompt_overrides'] = _json.loads(r.get('prompt_overrides') or '{}')
+            except Exception:
+                r['prompt_overrides'] = {}
+            r['dual_output'] = bool(r.get('dual_output'))
+            r['active'] = bool(r.get('active'))
+        return rows
+    finally:
+        conn.close()
+
+
+def get_template(template_id: int) -> Optional[dict]:
+    """Fetch one template by id, with JSON decoded. Returns None if missing."""
+    import json as _json
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM content_templates WHERE id = ?", (template_id,)
+        ).fetchone()
+        if not row:
+            return None
+        r = dict(row)
+        try:
+            r['hook_style_pool'] = _json.loads(r.get('hook_style_pool') or '[]')
+        except Exception:
+            r['hook_style_pool'] = []
+        try:
+            r['prompt_overrides'] = _json.loads(r.get('prompt_overrides') or '{}')
+        except Exception:
+            r['prompt_overrides'] = {}
+        r['dual_output'] = bool(r.get('dual_output'))
+        r['active'] = bool(r.get('active'))
+        return r
+    finally:
+        conn.close()
+
+
+def get_template_by_name(channel_id: str, name: str) -> Optional[dict]:
+    """Lookup a template by (channel_id, name). Returns None if missing."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id FROM content_templates WHERE channel_id = ? AND name = ?",
+            (channel_id, name),
+        ).fetchone()
+    finally:
+        conn.close()
+    return get_template(row['id']) if row else None
+
+
+def update_template(template_id: int, **fields) -> None:
+    """
+    Update arbitrary fields on a template row. JSON fields auto-encoded.
+
+    Args:
+        template_id (int): Row id.
+        **fields:          Any of the column names from content_templates.
+    """
+    import json as _json
+    allowed = {
+        'name', 'visual_mode', 'length_min_seconds', 'length_max_seconds',
+        'hook_style_pool', 'music_palette', 'thumbnail_mode', 'caption_mode',
+        'prompt_overrides', 'dual_output', 'active',
+    }
+    sets, params = [], []
+    for k, v in fields.items():
+        if k not in allowed:
+            continue
+        if k in ('hook_style_pool', 'prompt_overrides') and not isinstance(v, str):
+            v = _json.dumps(v)
+        if k in ('dual_output', 'active') and isinstance(v, bool):
+            v = 1 if v else 0
+        sets.append(f"{k} = ?"); params.append(v)
+    if not sets:
+        return
+    sets.append("updated_at = datetime('now')")
+    params.append(template_id)
+    conn = get_connection()
+    try:
+        conn.execute(
+            f"UPDATE content_templates SET {', '.join(sets)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_template(template_id: int) -> None:
+    """Permanently delete a template row."""
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM content_templates WHERE id = ?", (template_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 Block B — API usage tracking
+# ---------------------------------------------------------------------------
+
+def record_api_usage(
+    provider: str,
+    operation: str,
+    units_used: int = 0,
+    cost_estimate_cents: int = 0,
+    channel_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+) -> int:
+    """
+    Insert one row into api_usage for a single external API call.
+
+    Cost is stored in integer cents so totals never drift on floating point.
+    Pass cost_estimate_cents=0 for zero-cost providers (e.g. Kokoro local).
+
+    Args:
+        provider (str):           e.g. 'claude', 'elevenlabs', 'kokoro', 'leonardo'.
+        operation (str):          Short label e.g. 'messages.create', 'tts'.
+        units_used (int):         Provider-native units (tokens, chars, frames).
+        cost_estimate_cents (int): Estimated USD cents.
+        channel_id (str):         Owning channel slug, if known.
+        job_id (str):             Owning job id, if known.
+
+    Returns:
+        int: Inserted row id.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            """INSERT INTO api_usage
+                   (channel_id, job_id, provider, operation, units_used, cost_estimate_cents)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (channel_id, job_id, provider, operation, int(units_used or 0),
+             int(cost_estimate_cents or 0)),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_api_usage_summary(
+    since_iso: Optional[str] = None,
+    channel_id: Optional[str] = None,
+) -> list:
+    """
+    Aggregate api_usage rows by (channel_id, provider).
+
+    Args:
+        since_iso (str | None): If provided, only count rows from this UTC time.
+        channel_id (str|None):  Optional channel filter.
+
+    Returns:
+        list[dict]: [{channel_id, provider, units_used, cost_estimate_cents, calls}]
+    """
+    conn = get_connection()
+    try:
+        sql = """
+            SELECT channel_id, provider,
+                   SUM(units_used)           AS units_used,
+                   SUM(cost_estimate_cents)  AS cost_estimate_cents,
+                   COUNT(*)                  AS calls
+            FROM api_usage
+        """
+        conds, params = [], []
+        if since_iso:
+            conds.append("timestamp >= ?"); params.append(since_iso)
+        if channel_id:
+            conds.append("channel_id = ?"); params.append(channel_id)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " GROUP BY channel_id, provider ORDER BY channel_id, provider"
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    finally:
+        conn.close()
+
+
+def rollup_api_usage_daily(day_iso: str) -> int:
+    """
+    Roll up all api_usage rows from `day_iso` into api_usage_daily and return
+    the number of (channel, provider) buckets written.
+
+    Args:
+        day_iso (str): YYYY-MM-DD UTC day to roll up.
+
+    Returns:
+        int: Number of bucket rows upserted.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT channel_id, provider,
+                      SUM(units_used)          AS units_used,
+                      SUM(cost_estimate_cents) AS cost_estimate_cents
+               FROM api_usage
+               WHERE substr(timestamp, 1, 10) = ?
+               GROUP BY channel_id, provider""",
+            (day_iso,),
+        ).fetchall()
+        for r in rows:
+            conn.execute(
+                """INSERT INTO api_usage_daily
+                       (day, channel_id, provider, units_used, cost_estimate_cents)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(day, channel_id, provider) DO UPDATE SET
+                       units_used          = excluded.units_used,
+                       cost_estimate_cents = excluded.cost_estimate_cents,
+                       rolled_at           = datetime('now')""",
+                (day_iso, r['channel_id'], r['provider'],
+                 int(r['units_used'] or 0), int(r['cost_estimate_cents'] or 0)),
+            )
+        conn.commit()
+        return len(rows)
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 Block F/G — R2 object tracking
+# ---------------------------------------------------------------------------
+
+def insert_r2_object(
+    job_id: str,
+    kind: str,
+    bucket: str,
+    key: str,
+    url: str,
+    size_bytes: int = 0,
+    channel_id: Optional[str] = None,
+    expires_at: Optional[str] = None,
+) -> int:
+    """
+    Record a successful R2 upload so the nightly retention job can clean it up.
+
+    Args:
+        job_id (str):     Owning job id.
+        kind (str):       'video' | 'thumbnail'.
+        bucket (str):     R2 bucket name.
+        key (str):        Object key.
+        url (str):        Stored URL returned to the dashboard.
+        size_bytes (int): Size as reported by R2 (best-effort).
+        channel_id (str): Owning channel.
+        expires_at (str): UTC ISO datetime when this object becomes eligible
+                          for deletion (used by retention sweep).
+
+    Returns:
+        int: Inserted row id.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            """INSERT INTO r2_objects
+                   (job_id, channel_id, kind, bucket, key, url, size_bytes, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (job_id, channel_id, kind, bucket, key, url, int(size_bytes or 0), expires_at),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_active_r2_objects(channel_id: Optional[str] = None) -> list:
+    """Return r2_objects rows where deleted=0, optionally filtered by channel."""
+    conn = get_connection()
+    try:
+        sql = "SELECT * FROM r2_objects WHERE deleted = 0"
+        params = []
+        if channel_id:
+            sql += " AND channel_id = ?"; params.append(channel_id)
+        sql += " ORDER BY uploaded_at DESC"
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    finally:
+        conn.close()
+
+
+def get_expired_r2_objects(now_iso: str) -> list:
+    """
+    Return r2_objects rows whose expires_at <= now_iso and not yet deleted.
+
+    Args:
+        now_iso (str): Current UTC ISO datetime string.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT * FROM r2_objects
+               WHERE deleted = 0
+                 AND expires_at IS NOT NULL
+                 AND expires_at <= ?
+               ORDER BY expires_at""",
+            (now_iso,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def mark_r2_deleted(r2_id: int) -> None:
+    """Mark an r2_objects row as deleted."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            """UPDATE r2_objects
+               SET deleted = 1, deleted_at = datetime('now')
+               WHERE id = ?""",
+            (r2_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_r2_storage_by_channel() -> dict:
+    """
+    Return per-channel R2 bytes-in-use and object counts.
+
+    Returns:
+        dict: {channel_id: {'bytes': int, 'count': int, 'next_expiry': str|None}}
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT channel_id,
+                      SUM(size_bytes)  AS bytes,
+                      COUNT(*)         AS count,
+                      MIN(expires_at)  AS next_expiry
+               FROM r2_objects
+               WHERE deleted = 0
+               GROUP BY channel_id"""
+        ).fetchall()
+        return {
+            (r['channel_id'] or 'unknown'): {
+                'bytes':       int(r['bytes'] or 0),
+                'count':       int(r['count'] or 0),
+                'next_expiry': r['next_expiry'],
+            }
+            for r in rows
+        }
+    finally:
+        conn.close()
+
+
+def set_r2_expiry(r2_id: int, expires_at: str) -> None:
+    """Override an r2_objects row's expires_at (used for post-YouTube override)."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE r2_objects SET expires_at = ? WHERE id = ?",
+            (expires_at, r2_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_r2_objects_for_job(job_id: str) -> list:
+    """Return all r2_objects rows tied to a job (any state)."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM r2_objects WHERE job_id = ? ORDER BY uploaded_at DESC",
+            (job_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 

@@ -862,6 +862,152 @@ def archive_job_files(job_id: str, channel_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase 13 Block D — cross-platform fan-out for teaser shorts
+# ---------------------------------------------------------------------------
+
+def _schedule_cross_platform_followups(youtube_job_id: str, youtube_long_url: str) -> None:
+    """
+    After a successful YouTube upload, schedule TikTok + Instagram uploads of
+    the paired teaser short 6 hours later. The schedule field used is the
+    teaser short job's `scheduled_upload_at` — the existing scheduler picks it
+    up via run_scheduled_uploads. The YouTube long-form URL is stashed in the
+    teaser job's review_note so the platform-specific uploaders can inject it
+    into descriptions.
+
+    No-op for jobs without a linked short.
+    """
+    from datetime import datetime, timedelta
+    from database import get_job
+    job = get_job(youtube_job_id) or {}
+    # Only the LONG job triggers fan-out — its linked_job_id points at the short.
+    if (job.get('story_role') or '').lower() != 'long':
+        return
+    short_id = job.get('linked_job_id')
+    if not short_id:
+        return
+    when = (datetime.utcnow() + timedelta(hours=6)).strftime('%Y-%m-%d %H:%M:%S')
+    update_job_field(short_id, 'scheduled_upload_at', when)
+    update_job_field(short_id, 'review_note', f'yt_long_url:{youtube_long_url}')
+    logger.info(
+        f"[JOB {youtube_job_id}] Block D — scheduled short {short_id} for "
+        f"TikTok+Instagram at {when} (YouTube URL: {youtube_long_url})"
+    )
+
+
+def _maybe_shorten_r2_expiry(job_id: str, config: dict) -> None:
+    """
+    Block G — after a successful YouTube upload, optionally compress the R2
+    expiry to +24h so the cloud preview frees up the day after publish.
+
+    Behaviour gated by config.r2.keep_after_youtube_upload (default False):
+      - False: shorten every active r2_objects row for this job to now+24h.
+      - True:  leave expires_at alone; the standard r2.retention_days applies.
+
+    The linked teaser short keeps its preview intact through this window so
+    Instagram (which needs a public URL) can still pull from R2 6 hours later.
+    """
+    from datetime import datetime, timedelta
+    from database import (get_r2_objects_for_job, set_r2_expiry, get_job)
+
+    keep = bool((config.get('r2') or {}).get('keep_after_youtube_upload', False))
+    if keep:
+        logger.info(f"[JOB {job_id}] r2.keep_after_youtube_upload=true — leaving expiry untouched")
+        return
+    new_expiry = (datetime.utcnow() + timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
+    rows = get_r2_objects_for_job(job_id)
+    changed = 0
+    for row in rows:
+        if row.get('deleted'):
+            continue
+        set_r2_expiry(row['id'], new_expiry)
+        changed += 1
+    logger.info(
+        f"[JOB {job_id}] Block G — R2 expiry shortened to {new_expiry} "
+        f"for {changed} object(s) (post-YouTube override)"
+    )
+
+    # Also apply the override to the linked teaser short so its own R2 objects
+    # get cleaned up on the same schedule (Block D scheduling already covers
+    # the +6h Instagram window before then).
+    job = get_job(job_id) or {}
+    linked_id = job.get('linked_job_id')
+    if linked_id and (job.get('story_role') or '').lower() == 'long':
+        linked_rows = get_r2_objects_for_job(linked_id)
+        for row in linked_rows:
+            if row.get('deleted'):
+                continue
+            set_r2_expiry(row['id'], new_expiry)
+
+
+def upload_short_cross_platform(short_job_id: str, config: dict) -> dict:
+    """
+    Drive the teaser short to TikTok and Instagram (Block D).
+
+    Reads the long-form YouTube URL from the short's review_note (set by
+    _schedule_cross_platform_followups). Per-platform enable flags come from
+    config.upload.tiktok and config.upload.instagram. Missing credential files
+    are treated as skipped (not failures).
+
+    Args:
+        short_job_id (str): Teaser short job id (status: scheduled_upload).
+        config (dict):      Merged channel config.
+
+    Returns:
+        dict: {success, tiktok: {...}, instagram: {...}, error?}.
+    """
+    from database import get_job
+    job = get_job(short_job_id) or {}
+    channel_slug = job.get('channel_id') or config.get('default_channel', 'engineering_brief')
+
+    # Recover the YouTube long URL stashed in review_note
+    note = job.get('review_note') or ''
+    yt_url = ''
+    for line in note.splitlines():
+        if line.startswith('yt_long_url:'):
+            yt_url = line.split(':', 1)[1].strip()
+            break
+
+    # Load this short's metadata for descriptions
+    meta_path = Path(f'output/metadata/{short_job_id}.json')
+    metadata = {}
+    if meta_path.exists():
+        try:
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+        except Exception:
+            pass
+
+    video_path = Path(f'output/videos/{short_job_id}_captioned.mp4')
+    if not video_path.exists():
+        video_path = Path(f'output/videos/{short_job_id}_raw.mp4')
+
+    results = {'tiktok': {}, 'instagram': {}}
+
+    # TikTok
+    try:
+        from modules.tiktok_upload import upload_to_tiktok
+        results['tiktok'] = upload_to_tiktok(
+            job_id=short_job_id, video_path=video_path, metadata=metadata,
+            channel_slug=channel_slug, config=config, youtube_long_url=yt_url,
+        )
+    except Exception as exc:
+        results['tiktok'] = {'success': False, 'error': str(exc)}
+
+    # Instagram — needs a public URL; prefer R2 preview_url if Block F set it.
+    public_url = job.get('preview_url') or ''
+    try:
+        from modules.instagram_upload import upload_to_instagram
+        results['instagram'] = upload_to_instagram(
+            job_id=short_job_id, video_url=public_url, metadata=metadata,
+            channel_slug=channel_slug, config=config, youtube_long_url=yt_url,
+        )
+    except Exception as exc:
+        results['instagram'] = {'success': False, 'error': str(exc)}
+
+    return {'success': True, **results}
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -962,6 +1108,36 @@ def upload_video(job_id: str, config: dict) -> dict:
                 youtube_result['video_id'] = yt['video_id']
                 update_job_field(job_id, 'youtube_url', yt['url'])
                 update_job_field(job_id, 'youtube_video_id', yt['video_id'])
+                # Block B — usage tracking
+                try:
+                    from utils.usage_tracker import track as _usage_track
+                    _usage_track(
+                        'youtube', 'videos.insert', units=1,
+                        channel_id=(get_job(job_id) or {}).get('channel_id'),
+                        job_id=job_id, config=config,
+                    )
+                except Exception:
+                    pass
+                # Block D — schedule TikTok + Instagram for the teaser short
+                # 6 hours after the YouTube short publishes (avoids platform
+                # duplicate-detection penalties).  Long-form jobs and jobs that
+                # have no story link are left alone.
+                try:
+                    _schedule_cross_platform_followups(job_id, yt['url'])
+                except Exception as _e:
+                    logger.warning(
+                        f"[JOB {job_id}] Could not schedule cross-platform followups: {_e}"
+                    )
+                # Block G — when keep_after_youtube_upload=false (default),
+                # shorten R2 expiry to +24h so the cloud preview frees up the
+                # day after publish. Long-form jobs that need their teasers to
+                # use R2 (Instagram) get a 24h grace window.
+                try:
+                    _maybe_shorten_r2_expiry(job_id, config)
+                except Exception as _e:
+                    logger.warning(
+                        f"[JOB {job_id}] Could not adjust R2 expiry: {_e}"
+                    )
                 logger.info(
                     f"[JOB {job_id}] YouTube upload done — {yt['url']}"
                 )
@@ -991,6 +1167,16 @@ def upload_video(job_id: str, config: dict) -> dict:
                 tiktok_result['video_id'] = tt['video_id']
                 update_job_field(job_id, 'tiktok_url', tt['url'])
                 update_job_field(job_id, 'tiktok_video_id', tt['video_id'])
+                # Block B — usage tracking
+                try:
+                    from utils.usage_tracker import track as _usage_track
+                    _usage_track(
+                        'tiktok', 'video.upload', units=1,
+                        channel_id=(get_job(job_id) or {}).get('channel_id'),
+                        job_id=job_id, config=config,
+                    )
+                except Exception:
+                    pass
                 logger.info(
                     f"[JOB {job_id}] TikTok upload done — {tt['url']}"
                 )

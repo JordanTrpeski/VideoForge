@@ -3,7 +3,10 @@
     "name": "Reddit Stories",
     "handle": "",
     "niche": "reddit_story_telling",
-    "platforms": ["tiktok", "youtube_shorts"],
+    "platforms": [
+      "tiktok",
+      "youtube_shorts"
+    ],
     "target_length_seconds": 600
   },
   "pipeline": {
@@ -15,24 +18,52 @@
   },
   "posting": {
     "batch_size_per_week": 5,
-    "tiktok_post_times": ["09:00", "15:00", "21:00"],
-    "youtube_post_times": ["09:00", "15:00", "21:00"],
+    "tiktok_post_times": [
+      "09:00",
+      "15:00",
+      "21:00"
+    ],
+    "youtube_post_times": [
+      "09:00",
+      "15:00",
+      "21:00"
+    ],
     "timezone": "Europe/Skopje"
   },
   "thumbnail": {
     "mode": "text_template",
     "text_template": {
       "variant_accents": [
-        [168, 85, 247],
-        [234, 179, 8]
+        [
+          168,
+          85,
+          247
+        ],
+        [
+          234,
+          179,
+          8
+        ]
       ]
+    }
+  },
+  "templates": ["narrative"],
+  "r2": {
+    "retention_days": 7,
+    "keep_after_youtube_upload": false
+  },
+  "usage": {
+    "monthly_budget_cents": {
+      "claude": 500,
+      "elevenlabs": 1000,
+      "kokoro": 0
     }
   },
   "metadata": {
     "description_skeletons": [
       "This actually happened. {youtube_description}\n\nFollow for daily Reddit stories.\n\n#Shorts #Reddit #Story",
       "{youtube_description}\n\nYou won't believe how this ends.\n\nFollow for more unbelievable real stories.\n\n#Shorts #Reddit",
-      "Reddit user shares: {topic}\n\n{youtube_description}\n\nMore wild stories every day — follow to not miss them.\n\n#Shorts #Reddit #Story"
+      "Reddit user shares: {topic}\n\n{youtube_description}\n\nMore wild stories every day \u00e2\u20ac\u201d follow to not miss them.\n\n#Shorts #Reddit #Story"
     ]
   }
 }

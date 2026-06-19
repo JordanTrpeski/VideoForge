@@ -390,15 +390,28 @@ def run_scheduled_uploads() -> None:
             from database import update_job_status
             update_job_status(job_id, 'uploading')
 
-            def _upload(jid=job_id, cfg=job_config):
+            def _upload(jid=job_id, cfg=job_config, jrow=job):
                 try:
-                    from modules.upload_engine import upload_video
-                    result = upload_video(job_id=jid, config=cfg)
-                    logger.info(
-                        f"[JOB {jid}] Scheduled upload result: "
-                        f"youtube={result.get('youtube', {}).get('success')}, "
-                        f"tiktok={result.get('tiktok', {}).get('success')}"
-                    )
+                    # Block D — teaser shorts (story_role='short') go through
+                    # the cross-platform path. Everything else uses upload_video.
+                    if (jrow.get('story_role') or '').lower() == 'short':
+                        from modules.upload_engine import upload_short_cross_platform
+                        result = upload_short_cross_platform(jid, cfg)
+                        from database import update_job_status as _ujs
+                        _ujs(jid, 'posted')
+                        logger.info(
+                            f"[JOB {jid}] Cross-platform upload result: "
+                            f"tiktok={result.get('tiktok', {}).get('success')}, "
+                            f"instagram={result.get('instagram', {}).get('success')}"
+                        )
+                    else:
+                        from modules.upload_engine import upload_video
+                        result = upload_video(job_id=jid, config=cfg)
+                        logger.info(
+                            f"[JOB {jid}] Scheduled upload result: "
+                            f"youtube={result.get('youtube', {}).get('success')}, "
+                            f"tiktok={result.get('tiktok', {}).get('success')}"
+                        )
                 except Exception as exc:
                     logger.error(f"[JOB {jid}] Scheduled upload failed: {exc}", exc_info=True)
                     update_job_status(jid, 'failed', error_module='upload_engine', error_message=str(exc))
@@ -503,6 +516,100 @@ def run_auto_fill_calendar(n: int = 5) -> dict:
     except Exception as exc:
         logger.error(f"SCHEDULER: Auto-fill calendar failed: {exc}", exc_info=True)
         return {'queued': 0, 'topics': [], 'error': str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 Block B — Daily usage rollup
+# ---------------------------------------------------------------------------
+
+def run_nightly_usage_rollup() -> dict:
+    """
+    Roll up yesterday's api_usage rows into api_usage_daily so the dashboard
+    can query historical totals without scanning every per-call row.
+
+    Returns:
+        dict: {'day': 'YYYY-MM-DD', 'buckets_written': int}
+    """
+    from datetime import datetime, timedelta
+    from database import init_db, rollup_api_usage_daily
+    init_db()
+    yday = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
+    try:
+        count = rollup_api_usage_daily(yday)
+        logger.info(
+            f"SCHEDULER: API usage rollup — day={yday}, "
+            f"{count} (channel,provider) bucket(s) written"
+        )
+        return {'day': yday, 'buckets_written': count}
+    except Exception as exc:
+        logger.error(f"SCHEDULER: usage rollup failed: {exc}", exc_info=True)
+        return {'day': yday, 'buckets_written': 0, 'error': str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 Block G — R2 retention sweep
+# ---------------------------------------------------------------------------
+
+def run_r2_retention_sweep() -> dict:
+    """
+    Delete R2 objects whose expires_at has passed.
+
+    Reads expired rows from r2_objects, deletes the matching keys from R2,
+    marks the rows as deleted, and clears the related preview_url fields on
+    jobs. Skipped silently if R2 credentials are not configured.
+
+    Returns:
+        dict: {'checked': int, 'deleted': int, 'errors': int}
+    """
+    from datetime import datetime
+    from database import (init_db, get_expired_r2_objects, mark_r2_deleted,
+                          update_job_field, get_job)
+    init_db()
+
+    try:
+        from modules.r2_storage import get_r2_client, delete_object
+    except Exception as exc:
+        logger.warning(f"SCHEDULER: r2 retention sweep — module unavailable: {exc}")
+        return {'checked': 0, 'deleted': 0, 'errors': 0, 'skipped': True}
+
+    client = get_r2_client()
+    if client is None:
+        logger.info("SCHEDULER: r2 retention sweep — R2 credentials not set, skipping")
+        return {'checked': 0, 'deleted': 0, 'errors': 0, 'skipped': True}
+
+    now_iso = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    expired = get_expired_r2_objects(now_iso)
+    logger.info(f"SCHEDULER: r2 retention sweep — {len(expired)} expired object(s)")
+
+    deleted = 0
+    errors = 0
+    for row in expired:
+        try:
+            delete_object(client, row['bucket'], row['key'])
+            mark_r2_deleted(row['id'])
+            deleted += 1
+            # Null the preview pointer on the job
+            try:
+                job = get_job(row['job_id'])
+                if job:
+                    if row['kind'] == 'video' and job.get('preview_url'):
+                        update_job_field(row['job_id'], 'preview_url', None)
+                    elif row['kind'] == 'thumbnail' and job.get('preview_thumb_url'):
+                        update_job_field(row['job_id'], 'preview_thumb_url', None)
+                    update_job_field(row['job_id'], 'preview_deleted_at', now_iso)
+            except Exception:
+                pass
+            logger.info(
+                f"SCHEDULER: r2 retention sweep — deleted {row['kind']} "
+                f"{row['bucket']}/{row['key']} for job {row['job_id']}"
+            )
+        except Exception as exc:
+            errors += 1
+            logger.warning(
+                f"SCHEDULER: r2 retention sweep — delete failed for "
+                f"{row['bucket']}/{row['key']}: {exc}"
+            )
+    return {'checked': len(expired), 'deleted': deleted, 'errors': errors}
 
 
 # ---------------------------------------------------------------------------
@@ -619,6 +726,29 @@ def start_scheduler() -> BackgroundScheduler:
         coalesce=True,
     )
     logger.info("Scheduled: scheduled_uploads_check — every 15 minutes")
+
+    # Daily 02:00 — API usage rollup (Block B) + R2 retention sweep (Block G)
+    _scheduler.add_job(
+        func=run_nightly_usage_rollup,
+        trigger=CronTrigger(hour=2, minute=0, timezone=timezone),
+        id='nightly_usage_rollup',
+        name='Daily API usage rollup (02:00)',
+        replace_existing=True,
+        misfire_grace_time=3600,
+        coalesce=True,
+    )
+    logger.info(f"Scheduled: nightly_usage_rollup — daily 02:00 {timezone}")
+
+    _scheduler.add_job(
+        func=run_r2_retention_sweep,
+        trigger=CronTrigger(hour=3, minute=0, timezone=timezone),
+        id='nightly_r2_retention',
+        name='Daily R2 retention sweep (03:00)',
+        replace_existing=True,
+        misfire_grace_time=3600,
+        coalesce=True,
+    )
+    logger.info(f"Scheduled: nightly_r2_retention — daily 03:00 {timezone}")
 
     _scheduler.start()
     logger.info("APScheduler started successfully")

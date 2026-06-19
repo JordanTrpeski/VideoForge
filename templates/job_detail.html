@@ -495,7 +495,16 @@
 <!-- Video player -->
 {% if video_url %}
 <div class="card rounded-lg p-5 mb-5">
-    <h2 class="font-semibold text-white text-sm mb-3">Video preview</h2>
+    <div class="flex items-center gap-2 mb-3">
+        <h2 class="font-semibold text-white text-sm">Video preview</h2>
+        {% if video_from_cloud %}
+        <span class="badge"
+              style="background:#1e3a5f;border:1px solid #38bdf8;color:#7dd3fc;
+                     padding:2px 8px;border-radius:6px;font-size:10px">R2 cloud</span>
+        {% else %}
+        <span class="badge badge-gray" style="padding:2px 8px;font-size:10px">local</span>
+        {% endif %}
+    </div>
     <video controls class="rounded mx-auto block" style="max-height:480px; max-width:270px">
         <source src="{{ video_url }}" type="video/mp4">
         Your browser does not support the video tag.

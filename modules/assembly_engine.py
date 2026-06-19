@@ -266,18 +266,38 @@ def _resolve_background_clip(job_id: str, config: dict = None) -> Path | None:
     Returns:
         Path | None: Path to a randomly chosen background clip, or None.
     """
-    dir_str = (config or {}).get('video', {}).get('backgrounds_dir', 'assets/backgrounds')
-    bg_dir = Path(dir_str)
-    if not bg_dir.exists():
-        logger.warning(
-            f"[JOB {job_id}] {bg_dir}/ not found — "
-            "cannot use background_loop visual mode"
-        )
-        return None
+    cfg = config or {}
+    dir_candidates = []
+    if cfg.get('pipeline', {}).get('visual_mode') == 'long_form_ambient':
+        # Prefer the channel's ambient dir for sleep/lore content.
+        amb_dir = cfg.get('ambient', {}).get('backgrounds_dir', '') \
+            or cfg.get('video', {}).get('ambient_dir', '')
+        if amb_dir:
+            dir_candidates.append(Path(amb_dir))
+        ch_slug = cfg.get('_channel', {}).get('slug', '')
+        if ch_slug:
+            dir_candidates.append(Path(f'channels/{ch_slug}/assets/ambient'))
+    dir_str = cfg.get('video', {}).get('backgrounds_dir', 'assets/backgrounds')
+    dir_candidates.append(Path(dir_str))
 
     clips: list[Path] = []
-    for pattern in _BACKGROUND_EXTENSIONS:
-        clips.extend(bg_dir.glob(pattern))
+    bg_dir = None
+    for cand in dir_candidates:
+        if cand and cand.exists():
+            found = []
+            for pattern in _BACKGROUND_EXTENSIONS:
+                found.extend(cand.glob(pattern))
+            if found:
+                bg_dir = cand
+                clips = found
+                break
+
+    if not clips:
+        logger.warning(
+            f"[JOB {job_id}] No video files found in: "
+            f"{[str(c) for c in dir_candidates]} — cannot use background visual mode"
+        )
+        return None
     clips = sorted(set(clips))
 
     if not clips:
@@ -549,6 +569,113 @@ def _build_background_video(
     return _mix_audio(bg, voice_clip, audio_duration, music_path, config, job_id)
 
 
+def _build_long_form_ambient_video(
+    background_path: Path,
+    audio_path: Path,
+    music_path: Path | None,
+    config: dict,
+    job_id: str,
+):
+    """
+    Assemble a long-form (up to 3 hours) ambient video for sleep/lore content.
+
+    Differences vs background_loop:
+      - No random start offset; the source clip loops from t=0 to make the loop
+        seamless when the same clip is reused for hours of audio.
+      - Supports an optional static overlay image composited on top (e.g. dim
+        castle illustration). Source: config.ambient.overlay_image (path).
+      - Supports an optional ambient audio bed (rain, fire crackling) mixed in
+        under the narration at config.ambient.ambient_audio_db (defaults -22).
+        Source: config.ambient.ambient_audio_path.
+      - Length cap is config.pipeline.long_form_max_seconds (default 10800).
+
+    Voice + music mixing still goes through _mix_audio so the music_volume_db
+    rules stay consistent across modes.
+
+    Args:
+        background_path (Path): Looped ambient background clip.
+        audio_path (Path):      Voice narration.
+        music_path (Path|None): Optional background music track.
+        config (dict):          Loaded config dict.
+        job_id (str):           Job id for log context.
+
+    Returns:
+        moviepy.VideoClip: Final clip ready to write.
+    """
+    from moviepy import (AudioFileClip, CompositeAudioClip, CompositeVideoClip,
+                          ImageClip, VideoFileClip)
+    from moviepy.video.fx import Loop
+    from moviepy.audio.fx import AudioLoop, MultiplyVolume
+
+    vid_cfg = config['video']
+    fps = vid_cfg['fps']
+    target_w = vid_cfg['width']
+    target_h = vid_cfg['height']
+
+    ambient_cfg = config.get('ambient', {}) or {}
+    max_seconds = int(config.get('pipeline', {}).get('long_form_max_seconds', 10800))
+
+    # --- 1. Load voice and clamp duration to max_seconds ---
+    voice_clip = AudioFileClip(str(audio_path))
+    audio_duration = voice_clip.duration
+    if audio_duration > max_seconds:
+        logger.warning(
+            f"[JOB {job_id}] Ambient audio {audio_duration:.0f}s exceeds cap "
+            f"{max_seconds}s — trimming"
+        )
+        voice_clip = voice_clip.with_duration(max_seconds)
+        audio_duration = max_seconds
+    logger.info(
+        f"[JOB {job_id}] Long-form ambient — total duration: {audio_duration:.0f}s"
+    )
+
+    # --- 2. Load and loop background to full duration ---
+    bg = VideoFileClip(str(background_path)).without_audio()
+    logger.info(
+        f"[JOB {job_id}] Background clip: {bg.w}x{bg.h}, src duration {bg.duration:.1f}s "
+        f"— looping to {audio_duration:.0f}s"
+    )
+    bg = bg.with_effects([Loop(duration=audio_duration)])
+    scale = max(target_w / bg.w, target_h / bg.h)
+    bg = bg.resized(scale).cropped(
+        width=target_w, height=target_h,
+        x_center=bg.w * scale / 2, y_center=bg.h * scale / 2,
+    )
+    bg = bg.with_fps(fps).with_duration(audio_duration)
+
+    # --- 3. Optional overlay image composited on top ---
+    overlay_path = ambient_cfg.get('overlay_image') or ''
+    if overlay_path and Path(overlay_path).exists():
+        logger.info(f"[JOB {job_id}] Compositing overlay: {overlay_path}")
+        overlay = (ImageClip(str(overlay_path))
+                   .resized((target_w, target_h))
+                   .with_duration(audio_duration))
+        video = CompositeVideoClip([bg, overlay], size=(target_w, target_h))
+    else:
+        video = bg
+
+    # --- 4. Optional ambient audio bed mixed under narration ---
+    ambient_audio_path = ambient_cfg.get('ambient_audio_path') or ''
+    if ambient_audio_path and Path(ambient_audio_path).exists():
+        ambient_db = float(ambient_cfg.get('ambient_audio_db', -22))
+        ambient_linear = _db_to_linear(ambient_db)
+        logger.info(
+            f"[JOB {job_id}] Mixing ambient bed: {ambient_audio_path} "
+            f"@ {ambient_db}dB ({ambient_linear:.3f}x)"
+        )
+        amb = AudioFileClip(str(ambient_audio_path))
+        if amb.duration < audio_duration:
+            amb = amb.with_effects([AudioLoop(duration=audio_duration)])
+        else:
+            amb = amb.with_duration(audio_duration)
+        amb = amb.with_effects([MultiplyVolume(ambient_linear)])
+        # Mix voice + ambient bed first, then hand off to _mix_audio for music
+        voice_clip = CompositeAudioClip([voice_clip, amb])
+
+    # --- 5. Music + voice via shared mixer ---
+    return _mix_audio(video, voice_clip, audio_duration, music_path, config, job_id)
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -604,22 +731,35 @@ def assemble_video(job_id: str, config: dict) -> dict:
         audio_path = _resolve_audio(job_id, script, config)
         music_path = _find_music_file(job_id, config)
 
-        # Decide visual source: background-loop clip vs image slideshow
+        # Decide visual source: background-loop clip vs image slideshow vs ambient
         visual_mode = config.get('pipeline', {}).get('visual_mode', 'images')
         background_path = None
-        if visual_mode == 'background_loop':
+        if visual_mode in ('background_loop', 'long_form_ambient'):
             background_path = _resolve_background_clip(job_id, config)
             if background_path is None:
                 raise RuntimeError(
-                    "Background loop mode requires .mp4 clips in "
-                    "channels/<slug>/assets/backgrounds/ — found 0 clips. "
-                    "Drop gameplay footage there and retry."
+                    f"{visual_mode} requires video clips in "
+                    "channels/<slug>/assets/backgrounds/ or ambient/ — found 0 clips."
                 )
 
         # ----------------------------------------------------------------
         # Build video
         # ----------------------------------------------------------------
-        if background_path is not None:
+        if visual_mode == 'long_form_ambient' and background_path is not None:
+            logger.info(
+                f"[JOB {job_id}] Long-form ambient — "
+                f"audio: {audio_path.name}, "
+                f"background: {background_path.name}, "
+                f"music: {music_path.name if music_path else 'none'}"
+            )
+            video = _build_long_form_ambient_video(
+                background_path=background_path,
+                audio_path=audio_path,
+                music_path=music_path,
+                config=config,
+                job_id=job_id,
+            )
+        elif background_path is not None:
             logger.info(
                 f"[JOB {job_id}] Inputs ready — "
                 f"audio: {audio_path.name}, "

@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}API usage — VideoForge{% endblock %}
+{% block content %}
+
+<div class="flex items-center justify-between mb-5">
+    <div>
+        <h1 class="text-xl font-semibold text-slate-100">API usage</h1>
+        <p class="text-xs mt-0.5" style="color:var(--muted)">
+            Month-to-date spend per channel × provider since {{ month_start }}.
+            Budgets come from each channel's <code>usage.monthly_budget_cents</code> config.
+        </p>
+    </div>
+    <div class="flex items-center gap-2">
+        <a href="/api/api-usage.csv" class="btn btn-ghost text-xs">Export CSV</a>
+    </div>
+</div>
+
+<div class="card rounded-xl p-5 mb-5">
+    <div class="flex items-center justify-between">
+        <p class="text-xs" style="color:var(--muted)">Total estimated cost</p>
+        <span class="text-2xl font-semibold text-slate-100">
+            ${{ '%.2f' | format(total_cents / 100) }}
+        </span>
+    </div>
+</div>
+
+{# Block G — R2 storage per channel + next-cleanup date #}
+{% if r2_storage %}
+<div class="card rounded-xl p-5 mb-5">
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="font-semibold text-white text-sm">R2 storage per channel</h2>
+        <span class="text-xs" style="color:var(--muted)">
+            Cleaned nightly at 03:00 — items past <code>r2.retention_days</code>
+        </span>
+    </div>
+    <table class="w-full text-xs">
+        <thead style="color:var(--muted)">
+            <tr>
+                <th class="text-left px-2 py-1">Channel</th>
+                <th class="text-right px-2 py-1">Objects</th>
+                <th class="text-right px-2 py-1">Bytes</th>
+                <th class="text-right px-2 py-1">Next cleanup</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for ch, info in r2_storage.items() %}
+            <tr style="border-top:1px solid var(--border)">
+                <td class="px-2 py-1.5 text-slate-300">{{ ch }}</td>
+                <td class="px-2 py-1.5 text-right text-slate-300">{{ info.count }}</td>
+                <td class="px-2 py-1.5 text-right text-slate-300">
+                    {% set mb = (info.bytes or 0) / 1048576 %}
+                    {% if mb >= 1 %}
+                        {{ '%.1f MB' | format(mb) }}
+                    {% else %}
+                        {{ '{:,}'.format(info.bytes or 0) }} B
+                    {% endif %}
+                </td>
+                <td class="px-2 py-1.5 text-right text-slate-300">
+                    {{ (info.next_expiry or '—')[:16] }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% if rows %}
+<div class="card rounded-xl overflow-hidden">
+    <table class="w-full text-xs">
+        <thead style="background:#0d1526; color:var(--muted)">
+            <tr>
+                <th class="text-left px-3 py-2 cursor-pointer" data-sort="channel_id">Channel</th>
+                <th class="text-left px-3 py-2 cursor-pointer" data-sort="provider">Provider</th>
+                <th class="text-right px-3 py-2 cursor-pointer" data-sort="calls">Calls</th>
+                <th class="text-right px-3 py-2 cursor-pointer" data-sort="units_used">Units</th>
+                <th class="text-right px-3 py-2 cursor-pointer" data-sort="cost_estimate_cents">Cost</th>
+                <th class="text-right px-3 py-2">Budget</th>
+                <th class="text-right px-3 py-2">% of budget</th>
+                <th class="text-center px-3 py-2">Alert</th>
+            </tr>
+        </thead>
+        <tbody id="usage-tbody">
+            {% for r in rows %}
+            <tr style="border-top:1px solid var(--border)"
+                data-channel_id="{{ r.channel_id or 'unknown' }}"
+                data-provider="{{ r.provider }}"
+                data-calls="{{ r.calls or 0 }}"
+                data-units_used="{{ r.units_used or 0 }}"
+                data-cost_estimate_cents="{{ r.cost_estimate_cents or 0 }}">
+                <td class="px-3 py-2 text-slate-300">{{ r.channel_id or 'unknown' }}</td>
+                <td class="px-3 py-2 text-slate-300">{{ r.provider }}</td>
+                <td class="px-3 py-2 text-right text-slate-300">{{ r.calls }}</td>
+                <td class="px-3 py-2 text-right text-slate-300">{{ '{:,}'.format(r.units_used or 0) }}</td>
+                <td class="px-3 py-2 text-right text-slate-200">
+                    ${{ '%.2f' | format((r.cost_estimate_cents or 0) / 100) }}
+                </td>
+                <td class="px-3 py-2 text-right text-slate-500">
+                    {% if r.budget_cents %}
+                        ${{ '%.2f' | format(r.budget_cents / 100) }}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                <td class="px-3 py-2 text-right text-slate-300">
+                    {% if r.pct_of_budget is not none %}
+                        {{ '%.0f' | format(r.pct_of_budget) }}%
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                <td class="px-3 py-2 text-center">
+                    {% if r.alert_80pct %}
+                    <span class="badge badge-amber">&gt;80%</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="card rounded-xl p-8 text-center">
+    <p class="text-slate-400 text-sm">No usage recorded this month yet.</p>
+</div>
+{% endif %}
+
+{% endblock %}
+{% block scripts %}
+<script>
+document.querySelectorAll('th[data-sort]').forEach(function(th) {
+    th.addEventListener('click', function() {
+        var key = th.getAttribute('data-sort');
+        var tbody = document.getElementById('usage-tbody');
+        var rows = Array.from(tbody.querySelectorAll('tr'));
+        var numeric = ['calls','units_used','cost_estimate_cents'].indexOf(key) >= 0;
+        rows.sort(function(a, b) {
+            var av = a.getAttribute('data-' + key);
+            var bv = b.getAttribute('data-' + key);
+            if (numeric) return Number(bv) - Number(av);
+            return String(av).localeCompare(String(bv));
+        });
+        rows.forEach(function(r) { tbody.appendChild(r); });
+    });
+});
+</script>
+{% endblock %}

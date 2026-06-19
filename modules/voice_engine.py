@@ -449,6 +449,27 @@ def generate_voice(job_id: str, config: dict) -> dict:
     if skip_result is not None:
         return skip_result
 
+    # Block B — wrap TTS callable to record characters synthesized per chunk
+    try:
+        from utils.usage_tracker import track as _usage_track
+        from database import get_job as _get_job
+        _job_row = _get_job(job_id) or {}
+        _ch_id = _job_row.get('channel_id')
+        _provider_key = ('openai_tts' if provider == 'openai'
+                         else 'kokoro' if provider == 'kokoro'
+                         else 'elevenlabs')
+        _raw_fn = tts_fn
+        def _tracked_tts(text, label):
+            audio = _raw_fn(text, label)
+            _usage_track(
+                _provider_key, f'tts:{label}', units=len(text or ''),
+                channel_id=_ch_id, job_id=job_id, config=config,
+            )
+            return audio
+        tts_fn = _tracked_tts
+    except Exception as _exc:
+        logger.debug(f"[JOB {job_id}] usage tracking wrap skipped: {_exc}")
+
     try:
         script = _load_script(job_id)
         logger.info(

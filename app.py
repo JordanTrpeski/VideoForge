@@ -701,15 +701,26 @@ def job_detail(job_id):
         except Exception:
             pass
 
+    # Block F — prefer R2 preview_url when present so the dashboard plays
+    # from the cloud (works from any device, any network). Local file path
+    # remains the fallback for when R2 is unavailable.
     video_url = None
-    if job.get('final_video_path') and Path(job['final_video_path']).exists():
+    video_from_cloud = False
+    if job.get('preview_url'):
+        video_url = job['preview_url']
+        video_from_cloud = True
+    elif job.get('final_video_path') and Path(job['final_video_path']).exists():
         video_url = f'/output/videos/{job_id}_captioned.mp4'
     elif job.get('raw_video_path') and Path(job['raw_video_path']).exists():
         video_url = f'/output/videos/{job_id}_raw.mp4'
 
-    # Primary thumbnail URL (chosen variant or fallback)
+    # Primary thumbnail URL — R2 first, then chosen variant, then default
     thumbnail_url = None
-    if job.get('thumbnail_path') and Path(job['thumbnail_path']).exists():
+    thumb_from_cloud = False
+    if job.get('preview_thumb_url'):
+        thumbnail_url = job['preview_thumb_url']
+        thumb_from_cloud = True
+    elif job.get('thumbnail_path') and Path(job['thumbnail_path']).exists():
         thumbnail_url = f'/output/thumbnails/{job_id}.jpg'
 
     # Detect text_template variants
@@ -738,7 +749,9 @@ def job_detail(job_id):
         lfp = linked_job.get('final_video_path')
         lrp = linked_job.get('raw_video_path')
         lid = linked_job['id']
-        if lfp and Path(lfp).exists():
+        if linked_job.get('preview_url'):
+            linked_video_url = linked_job['preview_url']
+        elif lfp and Path(lfp).exists():
             linked_video_url = f'/output/videos/{lid}_captioned.mp4'
         elif lrp and Path(lrp).exists():
             linked_video_url = f'/output/videos/{lid}_raw.mp4'
@@ -749,7 +762,9 @@ def job_detail(job_id):
                            meta_data=meta_data,
                            log_lines=log_lines,
                            video_url=video_url,
+                           video_from_cloud=video_from_cloud,
                            thumbnail_url=thumbnail_url,
+                           thumb_from_cloud=thumb_from_cloud,
                            thumbnail_variants=thumbnail_variants,
                            chosen_variant=chosen_variant,
                            linked_job=linked_job,
@@ -1121,8 +1136,34 @@ def retry_job(job_id):
     return redirect(url_for('job_detail', job_id=job_id))
 
 
+def _editor_scope() -> tuple:
+    """
+    Determine whether the editor writes to the global file or a channel overlay.
+
+    Reads the currently-selected channel from the session and falls back to
+    'global' when the channel selector is 'all'.
+
+    Returns:
+        tuple: (scope_kind: 'global' | 'channel', channel_slug: str | None)
+    """
+    selected = session.get('selected_channel', 'all')
+    if not selected or selected == 'all':
+        return ('global', None)
+    return ('channel', selected)
+
+
 @app.route('/config', methods=['GET', 'POST'])
 def config_editor():
+    scope_kind, channel_slug = _editor_scope()
+
+    # Resolve the file path the editor reads/writes from
+    if scope_kind == 'channel':
+        cfg_path = Path(f'channels/{channel_slug}/config.json')
+        scope_label = f'{channel_slug} overlay'
+    else:
+        cfg_path = Path('config.json')
+        scope_label = 'global defaults'
+
     if request.method == 'POST':
         try:
             new_config_str = request.form.get('config_json', '').strip()
@@ -1130,55 +1171,110 @@ def config_editor():
                 flash('No config data received.', 'error')
                 return redirect(url_for('config_editor'))
             new_config = json.loads(new_config_str)
-            with open('config.json', 'w', encoding='utf-8') as f:
+            cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cfg_path, 'w', encoding='utf-8') as f:
                 json.dump(new_config, f, indent=2, ensure_ascii=False)
-            logger.info("config.json updated via dashboard")
-            flash('Config saved. Changes apply to the next job run.', 'success')
+            logger.info(f"{cfg_path} updated via dashboard ({scope_label})")
+            flash(f'Config saved to {scope_label}. Changes apply to the next job run.',
+                  'success')
         except json.JSONDecodeError as exc:
             flash(f'Invalid JSON: {exc}', 'error')
         except Exception as exc:
             flash(f'Save failed: {exc}', 'error')
         return redirect(url_for('config_editor'))
 
-    config = _load_config()
-    return render_template('config_editor.html', config=config, active='config')
+    # GET — show the file contents if the overlay exists, else an empty stub
+    if cfg_path.exists():
+        try:
+            with open(cfg_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+        except Exception:
+            config = {}
+    else:
+        config = {}
+    return render_template(
+        'config_editor.html',
+        config=config,
+        active='config',
+        scope_kind=scope_kind,
+        scope_label=scope_label,
+        channel_slug=channel_slug,
+    )
+
+
+def _resolve_prompt_path(prompt_name: str) -> tuple:
+    """
+    Resolve the editor's read+write target for one prompt file.
+
+    When a channel is selected: writes go to channels/<slug>/prompts/<name>.
+    Reads fall back to the global file when the overlay doesn't exist yet so
+    the user can start from the global text. When no channel is selected:
+    everything goes to the global prompts/ directory.
+
+    Args:
+        prompt_name (str): Bare filename e.g. 'script_prompt.txt'.
+
+    Returns:
+        tuple: (write_path: Path, read_path: Path, scope_kind: str,
+                scope_label: str, channel_slug: str | None)
+    """
+    scope_kind, channel_slug = _editor_scope()
+    global_path = Path(f'prompts/{prompt_name}')
+    if scope_kind == 'channel':
+        overlay_path = Path(f'channels/{channel_slug}/prompts/{prompt_name}')
+        # Read overlay if present, else fall back to global so the user starts
+        # from a sane base. Always write to overlay.
+        read_from = overlay_path if overlay_path.exists() else global_path
+        return overlay_path, read_from, scope_kind, f'{channel_slug} overlay', channel_slug
+    return global_path, global_path, scope_kind, 'global defaults', None
 
 
 @app.route('/prompts', methods=['GET'])
 def prompts_editor():
-    script_prompt = ''
-    meta_prompt   = ''
-    try:
-        script_prompt = Path('prompts/script_prompt.txt').read_text(encoding='utf-8')
-    except Exception:
-        pass
-    try:
-        meta_prompt = Path('prompts/metadata_prompt.txt').read_text(encoding='utf-8')
-    except Exception:
-        pass
+    scope_kind, channel_slug = _editor_scope()
+    script_w, script_r, _, scope_label, _ = _resolve_prompt_path('script_prompt.txt')
+    meta_w, meta_r, _, _, _ = _resolve_prompt_path('metadata_prompt.txt')
+
+    def _safe_read(p):
+        try:
+            return p.read_text(encoding='utf-8')
+        except Exception:
+            return ''
+
     config = _load_config()
-    return render_template('prompts.html',
-                           script_prompt=script_prompt,
-                           meta_prompt=meta_prompt,
-                           config=config,
-                           active='prompts')
+    return render_template(
+        'prompts.html',
+        script_prompt=_safe_read(script_r),
+        meta_prompt=_safe_read(meta_r),
+        config=config,
+        active='prompts',
+        scope_kind=scope_kind,
+        scope_label=scope_label,
+        channel_slug=channel_slug,
+        script_target=str(script_w),
+        meta_target=str(meta_w),
+    )
 
 
 @app.route('/prompts/script', methods=['POST'])
 def save_script_prompt():
+    write_path, _, scope_kind, scope_label, _ = _resolve_prompt_path('script_prompt.txt')
     content = request.form.get('content', '')
-    Path('prompts/script_prompt.txt').write_text(content, encoding='utf-8')
-    logger.info("script_prompt.txt updated via dashboard")
-    flash('Script prompt saved.', 'success')
+    write_path.parent.mkdir(parents=True, exist_ok=True)
+    write_path.write_text(content, encoding='utf-8')
+    logger.info(f"{write_path} updated via dashboard ({scope_label})")
+    flash(f'Script prompt saved to {scope_label}.', 'success')
     return redirect(url_for('prompts_editor'))
 
 
 @app.route('/prompts/metadata', methods=['POST'])
 def save_metadata_prompt():
+    write_path, _, scope_kind, scope_label, _ = _resolve_prompt_path('metadata_prompt.txt')
     content = request.form.get('content', '')
-    Path('prompts/metadata_prompt.txt').write_text(content, encoding='utf-8')
-    logger.info("metadata_prompt.txt updated via dashboard")
-    flash('Metadata prompt saved.', 'success')
+    write_path.parent.mkdir(parents=True, exist_ok=True)
+    write_path.write_text(content, encoding='utf-8')
+    logger.info(f"{write_path} updated via dashboard ({scope_label})")
+    flash(f'Metadata prompt saved to {scope_label}.', 'success')
     return redirect(url_for('prompts_editor'))
 
 
@@ -2393,6 +2489,235 @@ def research_score_top():
 
     flash(f'Scored {scored} topic{"s" if scored != 1 else ""}.', 'success')
     return redirect(url_for('research_topics', sort='final_score'))
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 Block B — API usage dashboard
+# ---------------------------------------------------------------------------
+
+def _month_start_iso() -> str:
+    """Return the UTC ISO datetime for the first of the current month."""
+    now = datetime.utcnow()
+    return now.replace(day=1, hour=0, minute=0, second=0,
+                       microsecond=0).strftime('%Y-%m-%d %H:%M:%S')
+
+
+def _read_channel_budgets() -> dict:
+    """
+    Return {channel_id: {provider: budget_cents}} read from each channel's
+    config.json overlay (research/usage.monthly_budget_cents).
+    """
+    budgets: dict = {}
+    ch_root = Path('channels')
+    if not ch_root.exists():
+        return budgets
+    for ch_dir in ch_root.iterdir():
+        cfg_path = ch_dir / 'config.json'
+        if not cfg_path.exists():
+            continue
+        try:
+            with open(cfg_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        usage_cfg = (data.get('usage') or {}).get('monthly_budget_cents') or {}
+        if isinstance(usage_cfg, dict) and usage_cfg:
+            budgets[ch_dir.name] = {k: int(v) for k, v in usage_cfg.items()}
+    return budgets
+
+
+@app.route('/api-usage')
+def api_usage_page():
+    """Render API usage breakdown for the current month with budget alerts."""
+    from database import get_api_usage_summary
+    selected = session.get('selected_channel', 'all')
+    ch_filter = None if selected == 'all' else selected
+    rows = get_api_usage_summary(
+        since_iso=_month_start_iso(),
+        channel_id=ch_filter,
+    )
+    budgets = _read_channel_budgets()
+
+    # Decorate rows with budget % and alert flags
+    decorated = []
+    total_cents = 0
+    for r in rows:
+        ch = r['channel_id'] or 'unknown'
+        prov = r['provider']
+        budget_cents = budgets.get(ch, {}).get(prov, 0)
+        spent_cents = int(r['cost_estimate_cents'] or 0)
+        pct = (spent_cents / budget_cents * 100.0) if budget_cents > 0 else None
+        alert = pct is not None and pct >= 80.0
+        decorated.append({
+            **r,
+            'budget_cents': budget_cents,
+            'pct_of_budget': pct,
+            'alert_80pct': alert,
+        })
+        total_cents += spent_cents
+
+    # Block G — R2 storage per channel + next-cleanup date
+    from database import get_r2_storage_by_channel
+    r2_storage = get_r2_storage_by_channel()
+    if ch_filter:
+        r2_storage = {k: v for k, v in r2_storage.items() if k == ch_filter}
+
+    return render_template(
+        'api_usage.html',
+        active='api_usage',
+        rows=decorated,
+        total_cents=total_cents,
+        channel_filter=ch_filter,
+        month_start=_month_start_iso()[:10],
+        r2_storage=r2_storage,
+    )
+
+
+@app.route('/api/api-usage.csv')
+def api_usage_csv():
+    """Stream the current month's usage breakdown as CSV."""
+    import csv, io
+    from database import get_api_usage_summary
+    selected = session.get('selected_channel', 'all')
+    ch_filter = None if selected == 'all' else selected
+    rows = get_api_usage_summary(
+        since_iso=_month_start_iso(),
+        channel_id=ch_filter,
+    )
+    budgets = _read_channel_budgets()
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(['channel_id', 'provider', 'calls', 'units_used',
+                'cost_estimate_cents', 'budget_cents', 'pct_of_budget'])
+    for r in rows:
+        ch = r['channel_id'] or 'unknown'
+        prov = r['provider']
+        budget_cents = budgets.get(ch, {}).get(prov, 0)
+        spent = int(r['cost_estimate_cents'] or 0)
+        pct = round((spent / budget_cents * 100.0), 1) if budget_cents > 0 else ''
+        w.writerow([ch, prov, r['calls'], r['units_used'], spent, budget_cents, pct])
+
+    from flask import Response
+    return Response(
+        buf.getvalue(),
+        mimetype='text/csv',
+        headers={'Content-Disposition': 'attachment; filename=api_usage.csv'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 Block A — Content templates dashboard
+# ---------------------------------------------------------------------------
+
+@app.route('/templates')
+def templates_page():
+    """List content_templates rows, optionally filtered by selected channel."""
+    from database import get_templates
+    selected = session.get('selected_channel', 'all')
+    ch_filter = None if selected == 'all' else selected
+    rows = get_templates(channel_id=ch_filter)
+    return render_template(
+        'templates.html',
+        active='templates',
+        templates=rows,
+        channel_filter=ch_filter,
+    )
+
+
+@app.route('/templates/new', methods=['POST'])
+def templates_create():
+    """Create a new content_templates row from the dashboard form."""
+    from database import insert_template
+    f = request.form
+    pool = [s.strip() for s in (f.get('hook_pool', '') or '').split(',') if s.strip()]
+    new_id = insert_template(
+        channel_id=f.get('channel_id', '').strip(),
+        name=f.get('name', '').strip(),
+        visual_mode=f.get('visual_mode', 'images'),
+        length_min_seconds=int(f.get('length_min_seconds') or 55),
+        length_max_seconds=int(f.get('length_max_seconds') or 90),
+        hook_style_pool=pool,
+        music_palette=f.get('music_palette', ''),
+        thumbnail_mode=f.get('thumbnail_mode', 'frame_capture'),
+        caption_mode=f.get('caption_mode', 'on'),
+        dual_output=(f.get('dual_output') == '1'),
+    )
+    flash(f'Template created (id={new_id}).', 'success')
+    return redirect(url_for('templates_page'))
+
+
+@app.route('/templates/<int:template_id>/edit', methods=['POST'])
+def templates_edit(template_id):
+    """Update an existing content_templates row."""
+    from database import update_template
+    f = request.form
+    pool = [s.strip() for s in (f.get('hook_pool', '') or '').split(',') if s.strip()]
+    update_template(
+        template_id,
+        name=f.get('name', '').strip(),
+        visual_mode=f.get('visual_mode', 'images'),
+        length_min_seconds=int(f.get('length_min_seconds') or 55),
+        length_max_seconds=int(f.get('length_max_seconds') or 90),
+        hook_style_pool=pool,
+        music_palette=f.get('music_palette', ''),
+        thumbnail_mode=f.get('thumbnail_mode', 'frame_capture'),
+        caption_mode=f.get('caption_mode', 'on'),
+        dual_output=(f.get('dual_output') == '1'),
+    )
+    flash(f'Template {template_id} updated.', 'success')
+    return redirect(url_for('templates_page'))
+
+
+@app.route('/templates/<int:template_id>/clone', methods=['POST'])
+def templates_clone(template_id):
+    """Clone a template under a new name (same channel by default)."""
+    from database import get_template, insert_template
+    src = get_template(template_id)
+    if not src:
+        flash(f'Template {template_id} not found.', 'error')
+        return redirect(url_for('templates_page'))
+    new_name = (request.form.get('name') or f"{src['name']}_copy").strip()
+    new_id = insert_template(
+        channel_id=src['channel_id'],
+        name=new_name,
+        visual_mode=src['visual_mode'],
+        length_min_seconds=src['length_min_seconds'],
+        length_max_seconds=src['length_max_seconds'],
+        hook_style_pool=src['hook_style_pool'],
+        music_palette=src['music_palette'],
+        thumbnail_mode=src['thumbnail_mode'],
+        caption_mode=src.get('caption_mode', 'on'),
+        prompt_overrides=src['prompt_overrides'],
+        dual_output=src['dual_output'],
+    )
+    flash(f'Template cloned as id {new_id}.', 'success')
+    return redirect(url_for('templates_page'))
+
+
+@app.route('/templates/<int:template_id>/toggle', methods=['POST'])
+def templates_toggle(template_id):
+    """Flip active=1/0 on a template."""
+    from database import get_template, update_template
+    t = get_template(template_id)
+    if not t:
+        flash(f'Template {template_id} not found.', 'error')
+        return redirect(url_for('templates_page'))
+    update_template(template_id, active=not t['active'])
+    flash(
+        f"Template {template_id} {'deactivated' if t['active'] else 'activated'}.",
+        'success',
+    )
+    return redirect(url_for('templates_page'))
+
+
+@app.route('/templates/<int:template_id>/delete', methods=['POST'])
+def templates_delete(template_id):
+    """Delete a template row."""
+    from database import delete_template
+    delete_template(template_id)
+    flash(f'Template {template_id} deleted.', 'success')
+    return redirect(url_for('templates_page'))
 
 
 # ---------------------------------------------------------------------------

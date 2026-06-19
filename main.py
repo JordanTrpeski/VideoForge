@@ -81,18 +81,27 @@ def cmd_generate_script(args) -> None:
     hook_style = args.hook or config['script']['hook_style']
     channel_id = channel or config.get('default_channel', 'engineering_brief')
 
+    template_name = getattr(args, 'template', None)
     create_job(job_id=job_id, topic=args.topic, bucket=bucket, hook_style=hook_style,
                channel_id=channel_id)
 
+    # Stamp the template name on the job up-front so the variation pick honours it
+    if template_name:
+        from database import update_job_field
+        update_job_field(job_id, 'template_name', template_name)
+
     print(f"\nJob {job_id} created — topic: '{args.topic}'")
-    print(f"Bucket: {bucket} | Hook: {hook_style}\n")
+    print(f"Bucket: {bucket} | Hook: {hook_style}"
+          + (f" | Template: {template_name}" if template_name else "")
+          + "\n")
 
     result = generate_script(
         job_id=job_id,
         topic=args.topic,
         config=config,
         bucket=bucket,
-        hook_style=hook_style
+        hook_style=hook_style,
+        template_name=template_name,
     )
 
     if result['success']:
@@ -975,6 +984,129 @@ def cmd_list_jobs(args) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Block A — Template management + full-pipeline runner
+# ---------------------------------------------------------------------------
+
+def cmd_pipeline(args) -> None:
+    """
+    Run the full pipeline for a single topic (script → … → review gate).
+
+    Accepts --template to override the variation engine's template pick.
+    """
+    from database import init_db, create_job, get_next_job_id, update_job_field
+    from scheduler import run_pipeline_sync
+
+    channel = getattr(args, 'channel', None)
+    config = load_config(channel_slug=channel)
+    init_db()
+
+    job_id = get_next_job_id()
+    channel_id = channel or config.get('default_channel', 'engineering_brief')
+
+    create_job(
+        job_id=job_id,
+        topic=args.topic,
+        bucket=args.bucket,
+        hook_style=args.hook,
+        channel_id=channel_id,
+    )
+    if args.template:
+        update_job_field(job_id, 'template_name', args.template)
+
+    print(f"\nJob {job_id} created — channel: {channel_id}, "
+          f"template: {args.template or '(auto)'}\n")
+
+    ok = run_pipeline_sync(job_id, config)
+    if not ok:
+        print(f"\nPipeline failed for job {job_id}. Check logs/errors.log.",
+              file=sys.stderr)
+        sys.exit(1)
+    print(f"\nJob {job_id} reached review gate.\n")
+
+
+def cmd_template(args) -> None:
+    """Manage content templates."""
+    from database import (init_db, insert_template, get_templates, get_template,
+                          update_template, delete_template)
+    init_db()
+
+    action = args.template_action
+    if action == 'list':
+        rows = get_templates(channel_id=getattr(args, 'channel', None))
+        if not rows:
+            print("No templates found.")
+            return
+        print(f"\n{'ID':<4} {'CHANNEL':<22} {'NAME':<22} {'VMODE':<18} "
+              f"{'LEN':<10} {'DUAL':<5} {'ACT':<3} HOOKS")
+        print("-" * 110)
+        for t in rows:
+            print(
+                f"{t['id']:<4} {t['channel_id']:<22} {t['name']:<22} "
+                f"{t['visual_mode']:<18} "
+                f"{t['length_min_seconds']}-{t['length_max_seconds']:<6} "
+                f"{'Y' if t['dual_output'] else 'N':<5} "
+                f"{'Y' if t['active'] else 'N':<3} "
+                f"{','.join(t['hook_style_pool'])[:50]}"
+            )
+        print()
+        return
+
+    if action == 'create':
+        pool = [s.strip() for s in (args.hook_pool or '').split(',') if s.strip()]
+        new_id = insert_template(
+            channel_id=args.channel,
+            name=args.name,
+            visual_mode=args.visual_mode,
+            length_min_seconds=args.length_min,
+            length_max_seconds=args.length_max,
+            hook_style_pool=pool,
+            music_palette=args.music_palette,
+            thumbnail_mode=args.thumbnail_mode,
+            caption_mode=args.caption_mode,
+            dual_output=args.dual_output,
+        )
+        print(f"\nTemplate created — id={new_id}, channel={args.channel}, "
+              f"name={args.name}\n")
+        return
+
+    if action == 'clone':
+        src = get_template(args.id)
+        if not src:
+            print(f"ERROR: Template {args.id} not found.", file=sys.stderr)
+            sys.exit(1)
+        new_id = insert_template(
+            channel_id=args.channel or src['channel_id'],
+            name=args.name,
+            visual_mode=src['visual_mode'],
+            length_min_seconds=src['length_min_seconds'],
+            length_max_seconds=src['length_max_seconds'],
+            hook_style_pool=src['hook_style_pool'],
+            music_palette=src['music_palette'],
+            thumbnail_mode=src['thumbnail_mode'],
+            caption_mode=src.get('caption_mode', 'on'),
+            prompt_overrides=src['prompt_overrides'],
+            dual_output=src['dual_output'],
+        )
+        print(f"\nTemplate cloned — new id={new_id}\n")
+        return
+
+    if action == 'activate':
+        update_template(args.id, active=True)
+        print(f"\nTemplate {args.id} activated.\n")
+        return
+
+    if action == 'deactivate':
+        update_template(args.id, active=False)
+        print(f"\nTemplate {args.id} deactivated.\n")
+        return
+
+    if action == 'delete':
+        delete_template(args.id)
+        print(f"\nTemplate {args.id} deleted.\n")
+        return
+
+
+# ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
 
@@ -1006,6 +1138,56 @@ def build_parser() -> argparse.ArgumentParser:
                           help='Hook style override (default: value from config.json)')
     p_script.add_argument('--channel', type=str, default=None, metavar='SLUG',
                           help='Channel slug (default: default_channel from config.json)')
+    p_script.add_argument('--template', type=str, default=None, metavar='NAME',
+                          help='Override the variation engine template selection '
+                               '(content_templates row name)')
+
+    # pipeline — alias that wires script+downstream stages, with --template
+    p_pipeline = subparsers.add_parser(
+        'pipeline',
+        help='Run a full pipeline for a single topic (Block A entry point)',
+    )
+    p_pipeline.add_argument('topic', type=str, help='Video topic')
+    p_pipeline.add_argument('--channel', type=str, default=None, metavar='SLUG',
+                            help='Channel slug (default: default_channel from config.json)')
+    p_pipeline.add_argument('--template', type=str, default=None, metavar='NAME',
+                            help='Override the variation engine template selection')
+    p_pipeline.add_argument('--bucket', type=str, default='elec',
+                            choices=['elec', 'infra', 'vehicle', 'flaw', 'reddit'])
+    p_pipeline.add_argument('--hook', type=str, default=None)
+
+    # template management — list/create/clone/activate/deactivate/delete
+    p_tpl = subparsers.add_parser('template', help='Manage content templates')
+    p_tpl_sub = p_tpl.add_subparsers(dest='template_action', metavar='ACTION')
+    p_tpl_sub.required = True
+    p_tpl_list = p_tpl_sub.add_parser('list', help='List templates')
+    p_tpl_list.add_argument('--channel', type=str, default=None)
+    p_tpl_create = p_tpl_sub.add_parser('create', help='Create a template')
+    p_tpl_create.add_argument('--channel', type=str, required=True, metavar='SLUG')
+    p_tpl_create.add_argument('--name', type=str, required=True)
+    p_tpl_create.add_argument('--visual-mode', type=str, default='images', dest='visual_mode',
+                              choices=['images', 'background_loop', 'long_form_ambient'])
+    p_tpl_create.add_argument('--length-min', type=int, default=55, dest='length_min')
+    p_tpl_create.add_argument('--length-max', type=int, default=90, dest='length_max')
+    p_tpl_create.add_argument('--hook-pool', type=str, default='',
+                              help='Comma-separated hook style names')
+    p_tpl_create.add_argument('--music-palette', type=str, default='', dest='music_palette')
+    p_tpl_create.add_argument('--thumbnail-mode', type=str, default='frame_capture',
+                              dest='thumbnail_mode')
+    p_tpl_create.add_argument('--caption-mode', type=str, default='on',
+                              choices=['on', 'off'], dest='caption_mode')
+    p_tpl_create.add_argument('--dual-output', action='store_true', dest='dual_output')
+    p_tpl_clone = p_tpl_sub.add_parser('clone', help='Clone an existing template')
+    p_tpl_clone.add_argument('--id', type=int, required=True)
+    p_tpl_clone.add_argument('--name', type=str, required=True)
+    p_tpl_clone.add_argument('--channel', type=str, default=None,
+                             help='Override channel for the clone')
+    p_tpl_act = p_tpl_sub.add_parser('activate', help='Set active=1 on a template')
+    p_tpl_act.add_argument('--id', type=int, required=True)
+    p_tpl_deact = p_tpl_sub.add_parser('deactivate', help='Set active=0 on a template')
+    p_tpl_deact.add_argument('--id', type=int, required=True)
+    p_tpl_del = p_tpl_sub.add_parser('delete', help='Delete a template')
+    p_tpl_del.add_argument('--id', type=int, required=True)
 
     # generate-voice
     p_voice = subparsers.add_parser('generate-voice', help='Run Stage 2: synthesise speech')
@@ -1162,6 +1344,8 @@ COMMAND_MAP = {
     'list-jobs':           cmd_list_jobs,
     'create-channel':      cmd_create_channel,
     'list-channels':       cmd_list_channels,
+    'pipeline':            cmd_pipeline,
+    'template':            cmd_template,
 }
 
 

@@ -2,14 +2,27 @@
 {% block title %}Prompt editor — VideoForge{% endblock %}
 
 {% block content %}
-<h1 class="text-lg font-semibold text-white mb-5">Prompt editor</h1>
+<div class="flex items-center gap-3 mb-5">
+    <h1 class="text-lg font-semibold text-white">Prompt editor</h1>
+    {% if scope_kind == 'channel' %}
+    <span class="badge"
+          style="background:#3b1f4e;border:1px solid #a855f7;color:#e9d5ff;
+                 padding:2px 10px;border-radius:6px;font-size:11px">
+        editing {{ scope_label }}
+    </span>
+    {% else %}
+    <span class="badge badge-gray" style="padding:2px 10px;font-size:11px">
+        editing {{ scope_label }}
+    </span>
+    {% endif %}
+</div>
 
 <div class="grid grid-cols-2 gap-6 mb-6">
     <!-- Script prompt -->
     <div class="card rounded-lg overflow-hidden">
         <div class="flex items-center justify-between px-5 py-3 border-b" style="border-color:var(--border)">
             <h2 class="font-semibold text-white text-sm">Script prompt</h2>
-            <span class="text-xs" style="color:var(--muted)">prompts/script_prompt.txt</span>
+            <span class="text-xs" style="color:var(--muted)">{{ script_target or 'prompts/script_prompt.txt' }}</span>
         </div>
         <div class="p-5">
             <form method="post" action="/prompts/script">
@@ -31,7 +44,7 @@
     <div class="card rounded-lg overflow-hidden">
         <div class="flex items-center justify-between px-5 py-3 border-b" style="border-color:var(--border)">
             <h2 class="font-semibold text-white text-sm">Metadata prompt</h2>
-            <span class="text-xs" style="color:var(--muted)">prompts/metadata_prompt.txt</span>
+            <span class="text-xs" style="color:var(--muted)">{{ meta_target or 'prompts/metadata_prompt.txt' }}</span>
         </div>
         <div class="p-5">
             <form method="post" action="/prompts/metadata">

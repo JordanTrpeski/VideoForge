@@ -212,6 +212,12 @@ def scan_reddit(
                     time_filter='week', limit=limit
                 )
                 posts = list(submissions)
+                # Block B — record one Reddit listing call per sub
+                try:
+                    from utils.usage_tracker import track as _usage_track
+                    _usage_track('reddit', f'subreddit.top:{sub_name}', units=1)
+                except Exception:
+                    pass
             except Exception as exc:
                 logger.error(
                     f"reddit_engine: Failed to fetch r/{sub_name}: {exc}",
