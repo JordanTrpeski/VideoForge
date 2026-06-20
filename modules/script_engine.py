@@ -40,7 +40,31 @@ logger = setup_logger('script_engine')
 REQUIRED_SCRIPT_KEYS = {'topic', 'bucket', 'hook_style', 'sections', 'narration', 'visual_brief', 'word_count'}
 # Reddit Stories use a background-loop visual, so no visual_brief is needed —
 # instead Claude returns 5 candidate opening hooks for the owner to pick from.
-REQUIRED_REDDIT_KEYS = {'topic', 'bucket', 'hook_style', 'sections', 'narration', 'hooks', 'word_count'}
+REQUIRED_REDDIT_KEYS = {
+    'topic', 'bucket', 'hook_style', 'sections', 'narration', 'hooks',
+    'word_count',
+    # Phase 14 Block 2 — original-fiction generation outputs
+    'primary_title', 'title_alternates',
+    'primary_thumbnail_text', 'thumbnail_text_alternates',
+    'first_30_seconds', 'symbolic_object',
+}
+
+# Phase 14 Block 2 — content guardrails enforced AFTER Claude returns.
+# Banned terms in titles + thumbnail texts (case-insensitive substring match).
+BANNED_TITLE_TERMS = (
+    'rape', 'murdered', 'suicide', 'minor', 'pregnant teen',
+)
+# Forbidden openings — if the first 30 seconds starts with any of these we log
+# a warning and surface the issue so the regenerate step in the prompt has
+# a fighting chance of catching it during dry runs.
+FORBIDDEN_OPENINGS = (
+    'welcome back',
+    'this story comes from reddit',
+    'before we begin',
+    'hi guys',
+    'hey everyone',
+    'today i want to tell you',
+)
 REQUIRED_SECTION_KEYS = {'hook', 'body', 'cta'}
 
 
@@ -140,6 +164,18 @@ def _build_reddit_prompt(
         target_length = config['channel']['target_length_seconds']
         word_count_target = config['script']['word_count_target']
 
+    content = config.get('content', {}) or {}
+    emotional_lane = content.get('emotional_lane', 'betrayal_revenge')
+    subgenre_weighting = content.get(
+        'subgenre_weighting',
+        {
+            'family_inheritance_property': 0.50,
+            'romantic_loyalty': 0.30,
+            'legal_proof': 0.20,
+        },
+    )
+    target_wpm = int((config.get('voice') or {}).get('target_wpm', 190))
+
     variables = {
         'title': title,
         'selftext': selftext,
@@ -147,6 +183,9 @@ def _build_reddit_prompt(
         'word_count_min': round(word_count_target * 0.92),
         'word_count_max': round(word_count_target * 1.08),
         'target_length_seconds': target_length,
+        'emotional_lane': emotional_lane,
+        'subgenre_weighting': json.dumps(subgenre_weighting, ensure_ascii=False),
+        'target_wpm': target_wpm,
     }
 
     # Explicit str.replace() so JSON literal braces in the template are never
@@ -155,6 +194,49 @@ def _build_reddit_prompt(
     for key, value in variables.items():
         result = result.replace('{' + key + '}', str(value))
     return result
+
+
+def _check_content_guardrails(data: dict, job_id: str) -> None:
+    """
+    Phase 14 Block 2 — enforce title/thumbnail banned-term list and warn on
+    forbidden openings in the first 30 seconds. Raises ValueError when a
+    banned term appears in any title or thumbnail-text field; logs a warning
+    when an opening line matches a forbidden pattern (the prompt asks Claude
+    to regenerate, but we surface here as a fallback for ops review).
+    """
+    title_blobs = [
+        data.get('primary_title', '') or '',
+        *list(data.get('title_alternates') or []),
+        data.get('primary_thumbnail_text', '') or '',
+        *list(data.get('thumbnail_text_alternates') or []),
+        data.get('topic', '') or '',
+    ]
+    for blob in title_blobs:
+        lower = (blob or '').lower()
+        for banned in BANNED_TITLE_TERMS:
+            if banned in lower:
+                raise ValueError(
+                    f"Banned term '{banned}' found in title/thumbnail "
+                    f"content: {blob!r}"
+                )
+
+    first_30 = (data.get('first_30_seconds') or '').strip().lower()
+    if first_30:
+        for opener in FORBIDDEN_OPENINGS:
+            if first_30.startswith(opener):
+                logger.warning(
+                    f"[JOB {job_id}] Forbidden opening detected in "
+                    f"first_30_seconds: '{opener}' — script should have "
+                    "regenerated. Flag for editorial review."
+                )
+                break
+
+    promise = (data.get('promise_check') or {})
+    if promise and not bool(promise.get('passes', True)):
+        logger.warning(
+            f"[JOB {job_id}] Promise-system self-check reported failure: "
+            f"{promise.get('single_emotional_promise')}"
+        )
 
 
 def _parse_script_response(raw_text: str, job_id: str, mode: str = 'standard') -> dict:
@@ -276,6 +358,8 @@ def _parse_script_response(raw_text: str, job_id: str, mode: str = 'standard') -
         if not isinstance(hooks, list) or len(hooks) < 1:
             raise ValueError(f"Reddit script JSON must contain a non-empty 'hooks' array, got: {hooks}")
         data.setdefault('visual_brief', [])
+        # Phase 14 Block 2 — content guardrails
+        _check_content_guardrails(data, job_id)
     else:
         # Validate visual_brief length for standard engineering scripts
         expected_images = 8
@@ -423,6 +507,17 @@ def _pick_variation(
     var_cfg = config['variation'][var_key]
     lengths: list = var_cfg['length_targets_seconds']
     hooks: list = var_cfg['hook_styles']
+
+    # Phase 14 Block 3 — occasional longer variant pool for the reddit lane.
+    # Pulls from occasional_long_targets_seconds with occasional_long_probability.
+    occ_pool = var_cfg.get('occasional_long_targets_seconds') or []
+    occ_prob = float(var_cfg.get('occasional_long_probability', 0.0))
+    if occ_pool and random.random() < occ_prob:
+        lengths = list(occ_pool)
+        logger.info(
+            f"[JOB {job_id}] Variation rolled occasional-long pool "
+            f"(prob {occ_prob:.2f}) — candidates: {lengths}"
+        )
 
     last_length, last_hook = get_last_job_variation(exclude_job_id=job_id)
 

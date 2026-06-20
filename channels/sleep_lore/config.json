@@ -1,0 +1,28 @@
+{
+  "channel": {
+    "name": "Sleep Lore",
+    "handle": "",
+    "niche": "sleep_mythology_folklore",
+    "platforms": ["youtube"],
+    "target_length_seconds": 3600
+  },
+  "pipeline": {
+    "visual_mode": "long_form_ambient",
+    "renderer": "ffmpeg",
+    "long_form_max_seconds": 10800
+  },
+  "audio": {
+    "loudness_target_lufs": -16
+  },
+  "voice": {
+    "provider": "kokoro",
+    "kokoro_voice": "af_bella",
+    "target_wpm": 140
+  },
+  "thumbnail": {
+    "mode": "frame_capture"
+  },
+  "ambient": {
+    "ambient_audio_db": -22
+  }
+}

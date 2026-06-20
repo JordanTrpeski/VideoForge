@@ -677,6 +677,231 @@ def _build_long_form_ambient_video(
 
 
 # ---------------------------------------------------------------------------
+# Phase 14 Block 1 — FFmpeg renderer dispatch helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_ffmpeg_format_spec(config: dict, script: dict, job_id: str) -> str:
+    """
+    Decide which ffmpeg_renderer format_spec to use based on the channel's
+    visual_mode and orientation. Mapping:
+
+      - long_form_ambient            -> long_form_ambient_16_9_no_captions
+      - background_loop / images:
+          - portrait (h > w)          -> short_9_16_captions
+          - landscape (w >= h)        -> long_form_16_9_captions
+    """
+    visual_mode = config.get('pipeline', {}).get('visual_mode', 'images')
+    if visual_mode == 'long_form_ambient':
+        return 'long_form_ambient_16_9_no_captions'
+
+    vid_cfg = config.get('video', {})
+    w = int(vid_cfg.get('width', 1080))
+    h = int(vid_cfg.get('height', 1920))
+    if h > w:
+        return 'short_9_16_captions'
+    return 'long_form_16_9_captions'
+
+
+def _build_caption_srt(job_id: str, config: dict, audio_path: Path,
+                       script: dict) -> Path | None:
+    """
+    Transcribe the audio (or fall back to script narration) and write an SRT
+    file with word-by-word entries. Returns the SRT path, or None if the
+    format spec doesn't use captions.
+    """
+    out_dir = Path('output/captions')
+    out_dir.mkdir(parents=True, exist_ok=True)
+    srt_path = out_dir / f"{job_id}.srt"
+
+    # Try whisper first
+    try:
+        from modules.caption_engine import _run_whisper  # type: ignore
+        words, reliable = _run_whisper(
+            audio_path,
+            config.get('captions', {}).get('whisper_model', 'base'),
+            job_id,
+        )
+        if reliable and words:
+            payload = [{
+                'word': (w.word or '').strip() or ' ',
+                'start': float(w.start or 0.0),
+                'end': float(w.end or 0.0),
+            } for w in words]
+            from modules.ffmpeg_renderer import _write_srt as _ws
+            _ws(payload, srt_path)
+            logger.info(
+                f"[JOB {job_id}] Word-by-word SRT written: {srt_path} "
+                f"({len(payload)} words)"
+            )
+            return srt_path
+    except Exception as e:
+        logger.warning(f"[JOB {job_id}] Whisper transcription failed: {e}")
+
+    # Fallback: evenly distribute script narration words across audio_duration
+    try:
+        narration = (script or {}).get('narration', '').strip()
+        if not narration:
+            return None
+        from modules.ffmpeg_renderer import _probe_duration, _write_srt as _ws
+        dur = _probe_duration(audio_path, job_id)
+        tokens = narration.split()
+        if not tokens or dur <= 0:
+            return None
+        step = dur / max(1, len(tokens))
+        payload = []
+        for i, tok in enumerate(tokens):
+            payload.append({
+                'word': tok,
+                'start': i * step,
+                'end': (i + 1) * step,
+            })
+        _ws(payload, srt_path)
+        logger.info(
+            f"[JOB {job_id}] Fallback SRT written from script narration "
+            f"({len(payload)} words)"
+        )
+        return srt_path
+    except Exception as e:
+        logger.warning(f"[JOB {job_id}] Fallback SRT failed: {e}")
+        return None
+
+
+def _assemble_via_ffmpeg(job_id: str, config: dict, stage_start: float) -> dict:
+    """
+    FFmpeg-direct renderer entry point. Reads the same script/audio/visual
+    inputs as the MoviePy path, but routes the actual encode through
+    modules.ffmpeg_renderer.render_video. Captures the actual command used so
+    the production_evidence log (Block 5) can record it verbatim.
+    """
+    from modules.ffmpeg_renderer import render_video
+
+    script_path = Path(f'output/scripts/{job_id}.json')
+    if not script_path.exists():
+        raise FileNotFoundError(
+            f"Script not found: {script_path}. Run generate-script first."
+        )
+    with open(script_path, 'r', encoding='utf-8') as f:
+        script = json.load(f)
+
+    logger.info(
+        f"[JOB {job_id}] Assembling via FFmpeg for topic: '{script.get('topic')}'"
+    )
+
+    audio_path = _resolve_audio(job_id, script, config)
+    music_path = _find_music_file(job_id, config)
+
+    visual_mode = config.get('pipeline', {}).get('visual_mode', 'images')
+    background_path = None
+    if visual_mode in ('background_loop', 'long_form_ambient'):
+        background_path = _resolve_background_clip(job_id, config)
+    if background_path is None:
+        # FFmpeg renderer always needs a background clip; fall back to a
+        # solid-colour generated clip if none configured.
+        background_path = _ensure_solid_background_clip(job_id, config)
+
+    format_spec = _resolve_ffmpeg_format_spec(config, script, job_id)
+
+    caption_spec = None
+    if format_spec in ('long_form_16_9_captions', 'short_9_16_captions'):
+        srt = _build_caption_srt(job_id, config, audio_path, script)
+        if srt is not None:
+            caption_spec = {'srt_path': str(srt)}
+
+    ambient_cfg = config.get('ambient', {}) or {}
+    input_paths = {
+        'voice': str(audio_path),
+        'background': str(background_path),
+        'music': str(music_path) if music_path else None,
+        'music_volume_db': config.get('video', {}).get('music_volume_db', -18),
+        'overlay_image': ambient_cfg.get('overlay_image') or None,
+        'ambient_audio_path': ambient_cfg.get('ambient_audio_path') or None,
+        'ambient_audio_db': ambient_cfg.get('ambient_audio_db', -22),
+        'max_seconds': config.get('pipeline', {}).get('long_form_max_seconds', 10800),
+    }
+
+    target_lufs = float(
+        (config.get('audio') or {}).get('loudness_target_lufs', -14.0)
+    )
+
+    output_dir = Path('output/videos')
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{job_id}_raw.mp4"
+
+    result = render_video(
+        job_id=job_id,
+        input_paths=input_paths,
+        output_path=str(output_path),
+        format_spec=format_spec,
+        audio_spec={'loudness_target_lufs': target_lufs},
+        caption_spec=caption_spec,
+    )
+
+    if not result.get('success'):
+        raise RuntimeError(
+            f"FFmpeg render failed: {result.get('stderr') or 'unknown error'}"
+        )
+
+    update_job_field(job_id, 'raw_video_path', str(output_path))
+    # Stash the renderer used + command for the production_evidence log.
+    try:
+        meta_dir = Path('output/render_meta')
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        with open(meta_dir / f'{job_id}.json', 'w', encoding='utf-8') as f:
+            json.dump({
+                'renderer_used': 'ffmpeg',
+                'format_spec': format_spec,
+                'loudness_target_lufs': result.get('loudness_target_lufs'),
+                'render_time_seconds': result.get('render_time_seconds'),
+                'duration_seconds': result.get('duration_seconds'),
+                'command': result.get('command'),
+            }, f, indent=2)
+    except Exception:
+        logger.debug(f"[JOB {job_id}] Could not write render_meta sidecar",
+                     exc_info=True)
+    update_job_status(job_id, 'captioning')
+
+    elapsed = time.time() - stage_start
+    logger.info(
+        f"[JOB {job_id}] assembly_engine (ffmpeg) COMPLETED in {elapsed:.1f}s"
+    )
+    return {'success': True, 'output_path': str(output_path)}
+
+
+def _ensure_solid_background_clip(job_id: str, config: dict) -> Path:
+    """
+    Generate a 1s solid-colour background MP4 using FFmpeg if no real clip is
+    configured. Allows the FFmpeg path to render even when channel assets are
+    not yet populated (used in test runs).
+    """
+    placeholders_dir = Path('output/placeholders')
+    placeholders_dir.mkdir(parents=True, exist_ok=True)
+    out = placeholders_dir / 'solid_bg.mp4'
+    if out.exists() and out.stat().st_size > 0:
+        return out
+
+    import shutil as _shutil
+    import subprocess as _sp
+    ffmpeg = _shutil.which('ffmpeg')
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found on PATH — cannot create placeholder bg")
+
+    w = int(config.get('video', {}).get('width', 1080))
+    h = int(config.get('video', {}).get('height', 1920))
+    cmd = [
+        ffmpeg, '-y', '-hide_banner', '-nostats',
+        '-f', 'lavfi',
+        '-i', f"color=c=0x0F1023:s={w}x{h}:d=1:r=30",
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', '1',
+        str(out),
+    ]
+    logger.info(
+        f"[JOB {job_id}] Generating solid placeholder background: {out}"
+    )
+    _sp.run(cmd, check=True, capture_output=True)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -701,6 +926,27 @@ def assemble_video(job_id: str, config: dict) -> dict:
     """
     stage_start = time.time()
     logger.info(f"[JOB {job_id}] Starting assembly_engine")
+
+    # ------------------------------------------------------------------
+    # Phase 14 Block 1 — FFmpeg renderer dispatch
+    # ------------------------------------------------------------------
+    # If config.pipeline.renderer is 'ffmpeg' the channel opts into the
+    # direct-FFmpeg path; default 'moviepy' keeps the existing behaviour.
+    renderer_choice = config.get('pipeline', {}).get('renderer', 'moviepy')
+    if str(renderer_choice).lower() == 'ffmpeg':
+        try:
+            return _assemble_via_ffmpeg(job_id, config, stage_start)
+        except Exception as e:
+            logger.error(
+                f"[JOB {job_id}] FFmpeg renderer dispatch FAILED: {e}",
+                exc_info=True,
+            )
+            update_job_status(
+                job_id, 'failed',
+                error_module='assembly_engine',
+                error_message=f"ffmpeg path failed: {e}",
+            )
+            return {'success': False, 'error': str(e)}
 
     try:
         # ----------------------------------------------------------------

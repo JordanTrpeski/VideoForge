@@ -4,17 +4,33 @@
     "handle": "",
     "niche": "reddit_story_telling",
     "platforms": [
+      "youtube",
       "tiktok",
-      "youtube_shorts"
+      "instagram"
     ],
-    "target_length_seconds": 600
+    "target_length_seconds": 1680
+  },
+  "content": {
+    "emotional_lane": "betrayal_revenge",
+    "subgenre_weighting": {
+      "family_inheritance_property": 0.50,
+      "romantic_loyalty": 0.30,
+      "legal_proof": 0.20
+    }
   },
   "pipeline": {
-    "visual_mode": "background_loop"
+    "visual_mode": "background_loop",
+    "renderer": "ffmpeg",
+    "long_form_max_seconds": 10800
+  },
+  "audio": {
+    "loudness_target_lufs": -14
   },
   "voice": {
-    "provider": "elevenlabs",
-    "voice_id": "SET_VOICE_ID_FOR_THIS_CHANNEL"
+    "provider": "kokoro",
+    "kokoro_voice": "af_heart",
+    "voice_id": "SET_VOICE_ID_FOR_THIS_CHANNEL",
+    "target_wpm": 190
   },
   "posting": {
     "batch_size_per_week": 5,
@@ -31,19 +47,11 @@
     "timezone": "Europe/Skopje"
   },
   "thumbnail": {
-    "mode": "text_template",
+    "mode": "symbolic_object",
     "text_template": {
       "variant_accents": [
-        [
-          168,
-          85,
-          247
-        ],
-        [
-          234,
-          179,
-          8
-        ]
+        [168, 85, 247],
+        [234, 179, 8]
       ]
     }
   },

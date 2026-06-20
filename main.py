@@ -957,6 +957,97 @@ def cmd_status(args) -> None:
     print()
 
 
+def cmd_export_prompt(args) -> None:
+    """
+    Print the fully resolved script generation prompt for a job. Use this to
+    paste into Claude.ai or ChatGPT browser chat for escalation to stronger
+    models.
+    """
+    from database import init_db
+    from modules.prompt_exporter import resolve_prompt
+
+    init_db()
+    config = load_config(channel_slug=getattr(args, 'channel', None))
+    rendered = resolve_prompt(args.job_id, config)
+    if args.to_file:
+        Path(args.to_file).write_text(rendered, encoding='utf-8')
+        print(f"\nPrompt written to: {args.to_file}\n")
+    else:
+        print(rendered)
+
+
+def cmd_import_script(args) -> None:
+    """
+    Read a JSON file containing the model's response to the exported prompt,
+    validate it strictly, and advance the job to 'script_done' status.
+    """
+    from database import init_db
+    from modules.prompt_exporter import import_script_from_payload
+
+    init_db()
+    path = Path(args.from_file)
+    if not path.exists():
+        print(f"ERROR: file not found: {path}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError as e:
+        print(f"ERROR: invalid JSON: {e}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        res = import_script_from_payload(
+            args.job_id, payload,
+            reported_model=(args.reported_model or 'external_manual'),
+        )
+        print(f"\nScript imported — saved to: {res['script_path']}")
+        print("Job advanced to status: script_done\n")
+    except ValueError as e:
+        print(f"ERROR: validation failed — {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_review_due(args) -> None:
+    """
+    Print a markdown summary of all videos awaiting their 48h review for the
+    given channel. Designed for spare-minute reading on a phone.
+    """
+    from database import init_db, get_reviews_due, get_all_analytics_for_job
+    init_db()
+    channel = getattr(args, 'channel', None)
+    rows = get_reviews_due(channel_id=channel)
+    if not rows:
+        print("# Reviews due\n\nNo videos awaiting 48h review.")
+        return
+
+    print("# Reviews due ({})".format(channel or 'all channels'))
+    print('')
+    for r in rows:
+        latest = (get_all_analytics_for_job(r['id'], 'youtube') or [{}])[0]
+        ctr = latest.get('ctr')
+        ret = latest.get('avg_view_percentage')
+        avd = latest.get('avg_view_duration')
+        views = latest.get('views')
+        print(f"## #{r['id']} — {r['topic']}")
+        print(f"- Channel: `{r.get('channel_id') or '—'}`")
+        print(f"- Due: {r.get('review_due_at') or '—'}")
+        print(f"- Views: {views if views is not None else 'n/a'}")
+        if ctr is not None:
+            print(f"- CTR (Home): {round(ctr*100, 2)}%")
+        else:
+            print(f"- CTR (Home): n/a")
+        print(f"- CTR (Suggested): n/a")
+        print(
+            f"- Intro retention @ 30s: "
+            f"{round(ret,1) if ret is not None else 'n/a'}%"
+        )
+        print(
+            f"- Avg view duration: "
+            f"{round(avd,1) if avd is not None else 'n/a'}s"
+        )
+        print(f"- First major drop-off: n/a")
+        print('')
+
+
 def cmd_list_jobs(args) -> None:
     """
     Print a table of all jobs in the database.
@@ -1221,6 +1312,44 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = subparsers.add_parser('status', help='Show status of a single job')
     p_status.add_argument('job_id', type=str, help='Job ID e.g. 001')
 
+    # export-prompt (Phase 14 Block 7)
+    p_ep = subparsers.add_parser(
+        'export-prompt',
+        help='Print the resolved script generation prompt for a job',
+    )
+    p_ep.add_argument('--job-id', type=str, required=True, dest='job_id')
+    p_ep.add_argument('--channel', type=str, default=None, metavar='SLUG')
+    p_ep.add_argument(
+        '--to-file', type=str, default=None, dest='to_file',
+        help='Write prompt to this file instead of stdout',
+    )
+
+    # import-script (Phase 14 Block 7)
+    p_is = subparsers.add_parser(
+        'import-script',
+        help='Import an external model JSON response and advance the job',
+    )
+    p_is.add_argument('--job-id', type=str, required=True, dest='job_id')
+    p_is.add_argument(
+        '--from-file', type=str, required=True, dest='from_file',
+        help='Path to JSON file with the model response',
+    )
+    p_is.add_argument(
+        '--reported-model', type=str, default='', dest='reported_model',
+        help='Which external model the user used '
+             '(e.g. "claude-opus-4.7-browser", "gpt-5-pro")',
+    )
+
+    # review-due (Phase 14 Block 6)
+    p_rev = subparsers.add_parser(
+        'review-due',
+        help='Print a markdown summary of videos awaiting 48h review',
+    )
+    p_rev.add_argument(
+        '--channel', type=str, default=None, metavar='SLUG',
+        help='Channel slug (default: all channels)',
+    )
+
     # list-jobs
     p_lj = subparsers.add_parser('list-jobs', help='List all jobs')
     p_lj.add_argument('--channel', type=str, default=None, metavar='SLUG',
@@ -1342,6 +1471,9 @@ COMMAND_MAP = {
     'upload':              cmd_upload,
     'status':              cmd_status,
     'list-jobs':           cmd_list_jobs,
+    'review-due':          cmd_review_due,
+    'export-prompt':       cmd_export_prompt,
+    'import-script':       cmd_import_script,
     'create-channel':      cmd_create_channel,
     'list-channels':       cmd_list_channels,
     'pipeline':            cmd_pipeline,

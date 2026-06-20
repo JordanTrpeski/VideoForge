@@ -226,6 +226,209 @@ def _generate_text_template_thumbnails(
 
 
 # ---------------------------------------------------------------------------
+# Phase 14 Block 4 — symbolic-object thumbnail mode
+# ---------------------------------------------------------------------------
+
+# Curated fallback object library (research-derived). Used when the script's
+# symbolic_object field is empty or invalid.
+SYMBOLIC_OBJECT_FALLBACKS = [
+    "inheritance envelope",
+    "paternity test",
+    "torn wedding photo",
+    "locked diary",
+    "court folder",
+    "house key with suitcase",
+    "stack of unopened mail",
+    "single set of car keys on a wooden table",
+    "manila legal folder",
+    "lone wedding ring on a nightstand",
+    "DNA test envelope",
+    "broken family photo frame",
+    "front-door lock with a fresh scratch",
+    "child's drawing pinned to a fridge",
+    "court summons envelope",
+    "leather wallet with one card pulled out",
+    "set of revoked office key cards",
+    "lone front-door key on a hotel bed",
+    "audio recorder on a cafe table",
+    "USB stick on a stack of papers",
+]
+
+
+SYMBOLIC_PROMPT_TEMPLATE = (
+    "high contrast cinematic photograph of {obj}, "
+    "dark background, dramatic lighting, no people, no text, "
+    "centered composition, sharp focus, shallow depth of field"
+)
+
+
+def _pick_symbolic_object(meta: dict, script: dict) -> str:
+    """Resolve the symbolic_object: script field first, then metadata field,
+    then a deterministic fallback from the curated library."""
+    candidates = [
+        (script or {}).get('symbolic_object'),
+        (meta or {}).get('symbolic_object'),
+    ]
+    for c in candidates:
+        if isinstance(c, str) and 1 <= len(c.strip().split()) <= 4 and len(c.strip()) > 1:
+            return c.strip()
+    # Deterministic fallback by hash of topic/title so two re-renders of the
+    # same job pick the same object.
+    seed_str = (
+        (meta or {}).get('youtube_title')
+        or (script or {}).get('topic')
+        or ''
+    )
+    if seed_str:
+        idx = abs(hash(seed_str)) % len(SYMBOLIC_OBJECT_FALLBACKS)
+    else:
+        idx = 0
+    return SYMBOLIC_OBJECT_FALLBACKS[idx]
+
+
+def _leonardo_generate_one(prompt: str, config: dict, job_id: str,
+                           variant_idx: int) -> Path | None:
+    """
+    Generate a single Leonardo image at the configured visuals resolution and
+    return the local file path. Returns None if Leonardo is not configured.
+    """
+    import os
+    if not os.getenv('LEONARDO_API_KEY'):
+        logger.warning(
+            f"[JOB {job_id}] LEONARDO_API_KEY not set — cannot generate "
+            "symbolic-object thumbnail; using placeholder"
+        )
+        return None
+
+    try:
+        from modules.image_engine import (
+            _build_generation_payload, _create_generation, _poll_generation,
+            _download_image,
+        )
+    except Exception as e:
+        logger.warning(f"[JOB {job_id}] Could not import Leonardo helpers: {e}")
+        return None
+
+    images_dir = Path(f'output/thumbnails/{job_id}_symbolic')
+    images_dir.mkdir(parents=True, exist_ok=True)
+    out = images_dir / f'object_v{variant_idx}.png'
+
+    try:
+        payload = _build_generation_payload(prompt, config)
+        # Different seed per variant to get different angles/lighting.
+        payload['seed'] = int(time.time() * 1000) % (10 ** 9) + variant_idx
+        gen_id = _create_generation(payload, os.getenv('LEONARDO_API_KEY'),
+                                    job_id, variant_idx)
+        urls = _poll_generation(gen_id, os.getenv('LEONARDO_API_KEY'),
+                                job_id, variant_idx)
+        if not urls:
+            return None
+        _download_image(urls[0], out, job_id, variant_idx)
+        return out
+    except Exception as e:
+        logger.warning(
+            f"[JOB {job_id}] Leonardo symbolic-object generation failed "
+            f"for variant {variant_idx}: {e}"
+        )
+        return None
+
+
+def _compose_symbolic_thumbnail(
+    base_img_path: Path | None,
+    thumbnail_text: str,
+    out_path: Path,
+    config: dict,
+    job_id: str,
+    variant_idx: int,
+) -> Path:
+    """
+    Take the Leonardo object image (or a dark placeholder if absent), resize
+    to landscape 1280x720, and burn the thumbnail_text overlay using PIL.
+    Returns the saved path.
+    """
+    W, H = 1280, 720
+    tt_cfg = (config.get('thumbnail') or {}).get('text_template') or {}
+    bg_color = tuple(tt_cfg.get('background_color', [15, 15, 25]))
+    font_path = tt_cfg.get('font_file', 'assets/fonts/Arial-Bold.ttf')
+    font_size = int(tt_cfg.get('font_size', 110))
+    text_color = tuple(tt_cfg.get('text_color', [255, 255, 255]))
+    stroke_color = tuple(tt_cfg.get('stroke_color', [0, 0, 0]))
+    stroke_width = int(tt_cfg.get('stroke_width', 5))
+
+    if base_img_path and Path(base_img_path).exists():
+        img = Image.open(str(base_img_path)).convert('RGB')
+        if img.size != (W, H):
+            # Scale-to-cover, centre-crop
+            sw, sh = img.size
+            scale = max(W / sw, H / sh)
+            nw, nh = int(sw * scale), int(sh * scale)
+            img = img.resize((nw, nh), Image.LANCZOS)
+            left = (nw - W) // 2
+            top = (nh - H) // 2
+            img = img.crop((left, top, left + W, top + H))
+    else:
+        img = Image.new('RGB', (W, H), bg_color)
+
+    # Bottom-positioned text overlay.
+    draw = ImageDraw.Draw(img)
+    font = _load_font(font_path, font_size, job_id)
+    text = (thumbnail_text or '').upper().strip()
+    if text:
+        bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        x = (W - tw) // 2
+        y = H - th - 60
+        # Stroke + fill
+        for dx in range(-stroke_width, stroke_width + 1):
+            for dy in range(-stroke_width, stroke_width + 1):
+                if dx != 0 or dy != 0:
+                    draw.text((x + dx, y + dy), text, font=font, fill=stroke_color)
+        draw.text((x, y), text, font=font, fill=text_color)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(str(out_path), format='JPEG', quality=95, optimize=True)
+    logger.info(
+        f"[JOB {job_id}] Symbolic-object thumbnail variant {variant_idx} "
+        f"saved: {out_path}"
+    )
+    return out_path
+
+
+def _generate_symbolic_object_thumbnails(
+    job_id: str,
+    thumbnail_text: str,
+    config: dict,
+    script: dict,
+    metadata: dict,
+) -> list:
+    """
+    Phase 14 Block 4 — produce 2 variants of a symbolic-object thumbnail.
+    Each variant is a Leonardo object image (different seed) with the
+    thumbnail_text composited via PIL.
+    """
+    obj = _pick_symbolic_object(metadata, script)
+    prompt = SYMBOLIC_PROMPT_TEMPLATE.format(obj=obj)
+    logger.info(
+        f"[JOB {job_id}] Symbolic-object thumbnail — object: '{obj}', "
+        f"prompt: '{prompt[:80]}...'"
+    )
+
+    output_dir = Path('output/thumbnails')
+    output_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[str] = []
+    for variant_idx in (1, 2):
+        base_img = _leonardo_generate_one(prompt, config, job_id, variant_idx)
+        out_path = output_dir / f"{job_id}_symbolic_v{variant_idx}.jpg"
+        _compose_symbolic_thumbnail(
+            base_img, thumbnail_text, out_path,
+            config, job_id, variant_idx,
+        )
+        paths.append(str(out_path))
+    return paths
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -256,6 +459,57 @@ def generate_thumbnail(job_id: str, config: dict) -> dict:
         thumb_cfg = config['thumbnail']
         mode = thumb_cfg.get('mode', 'frame_capture')
         logger.info(f"[JOB {job_id}] Thumbnail mode: {mode}")
+
+        # ----------------------------------------------------------------
+        # Phase 14 Block 4 — symbolic_object mode
+        # ----------------------------------------------------------------
+        if mode == 'symbolic_object':
+            meta_path = Path(f'output/metadata/{job_id}.json')
+            metadata = {}
+            if meta_path.exists():
+                try:
+                    metadata = json.loads(meta_path.read_text(encoding='utf-8'))
+                except Exception as e:
+                    logger.warning(
+                        f"[JOB {job_id}] Could not read metadata JSON: {e}"
+                    )
+            script_path = Path(f'output/scripts/{job_id}.json')
+            script = {}
+            if script_path.exists():
+                try:
+                    script = json.loads(script_path.read_text(encoding='utf-8'))
+                except Exception as e:
+                    logger.warning(
+                        f"[JOB {job_id}] Could not read script JSON: {e}"
+                    )
+            thumbnail_text = (
+                (script.get('primary_thumbnail_text') if script else '')
+                or metadata.get('thumbnail_text', '')
+                or ''
+            )
+            paths = _generate_symbolic_object_thumbnails(
+                job_id=job_id,
+                thumbnail_text=thumbnail_text,
+                config=config,
+                script=script,
+                metadata=metadata,
+            )
+            if not paths:
+                raise RuntimeError(
+                    "No symbolic-object thumbnail variants were generated"
+                )
+            update_job_field(job_id, 'thumbnail_path', paths[0])
+            elapsed = time.time() - stage_start
+            logger.info(
+                f"[JOB {job_id}] thumbnail_engine (symbolic_object) COMPLETED "
+                f"in {elapsed:.1f}s — {len(paths)} variants"
+            )
+            return {
+                'success': True,
+                'output_path': paths[0],
+                'variant_paths': paths,
+                'mode': 'symbolic_object',
+            }
 
         # ----------------------------------------------------------------
         # text_template mode

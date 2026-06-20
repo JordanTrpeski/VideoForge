@@ -41,7 +41,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from database import (create_job, get_all_jobs, get_channels, get_job,
                       get_next_job_id, init_db, update_job_field, update_job_status,
                       insert_manual_analytics, get_latest_analytics_per_job,
-                      get_all_analytics_for_job, get_linked_job)
+                      get_all_analytics_for_job, get_linked_job,
+                      get_reviews_due, mark_review_completed)
 from utils.config_loader import get_default_channel, load_channel_config
 from utils.logger import setup_logger
 from webhook import webhook_bp
@@ -723,12 +724,21 @@ def job_detail(job_id):
     elif job.get('thumbnail_path') and Path(job['thumbnail_path']).exists():
         thumbnail_url = f'/output/thumbnails/{job_id}.jpg'
 
-    # Detect text_template variants
+    # Detect text_template or symbolic_object variants
     thumbnail_variants = []
     for v in [1, 2]:
         vp = Path(f'output/thumbnails/{job_id}_v{v}.jpg')
         if vp.exists():
             thumbnail_variants.append({'index': v, 'url': f'/output/thumbnails/{job_id}_v{v}.jpg'})
+    # Phase 14 Block 4 — symbolic-object thumbnail variants
+    for v in [1, 2]:
+        sp = Path(f'output/thumbnails/{job_id}_symbolic_v{v}.jpg')
+        if sp.exists():
+            thumbnail_variants.append({
+                'index': v,
+                'url': f'/output/thumbnails/{job_id}_symbolic_v{v}.jpg',
+                'kind': 'symbolic_object',
+            })
     chosen_variant = job.get('thumbnail_variant') or (1 if thumbnail_variants else 0)
 
     log_lines = _read_log_lines(module='main', level='ALL',
@@ -1102,6 +1112,64 @@ def use_hook(job_id):
     return redirect(url_for('job_detail', job_id=job_id))
 
 
+@app.route('/jobs/<job_id>/export-prompt', methods=['GET'])
+def export_prompt_endpoint(job_id):
+    """
+    Phase 14 Block 7 — return the fully resolved script generation prompt as
+    plain text so the dashboard "Export prompt" button can copy it to the
+    clipboard.
+    """
+    from modules.prompt_exporter import resolve_prompt
+    job = get_job(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    channel = job.get('channel_id') or get_default_channel()
+    try:
+        config = load_channel_config(channel)
+    except Exception:
+        from main import load_config as _lc
+        config = _lc(channel_slug=channel)
+    try:
+        rendered = resolve_prompt(job_id, config)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+    return jsonify({'prompt': rendered})
+
+
+@app.route('/jobs/<job_id>/import-script', methods=['POST'])
+def import_script_endpoint(job_id):
+    """
+    Phase 14 Block 7 — accept a pasted JSON payload from a browser chat and
+    advance the job to 'script_done' status.
+    """
+    from modules.prompt_exporter import import_script_from_payload
+    job = get_job(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+
+    if request.is_json:
+        body = request.get_json(silent=True) or {}
+        raw = body.get('script_json')
+        reported_model = (body.get('reported_model') or '').strip() or 'external_manual'
+    else:
+        raw = request.form.get('script_json')
+        reported_model = (request.form.get('reported_model') or '').strip() or 'external_manual'
+    if not raw:
+        return jsonify({'error': 'script_json missing'}), 400
+    try:
+        if isinstance(raw, str):
+            payload = json.loads(raw)
+        else:
+            payload = raw
+    except json.JSONDecodeError as e:
+        return jsonify({'error': f'invalid JSON: {e}'}), 400
+    try:
+        res = import_script_from_payload(job_id, payload, reported_model)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    return jsonify({'ok': True, 'script_path': res['script_path']})
+
+
 @app.route('/jobs/<job_id>/retry', methods=['POST'])
 def retry_job(job_id):
     job = get_job(job_id)
@@ -1286,6 +1354,74 @@ def log_viewer():
 @app.route('/analytics')
 def analytics():
     return render_template('stats.html', active='analytics')
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 Block 6 — Post-upload review tracking
+# ---------------------------------------------------------------------------
+
+def _collect_review_metrics(job_id: str) -> dict:
+    """
+    Return the four post-upload review metrics for a job — best-available from
+    the analytics table (Phase 13 already ingests YouTube Analytics v2):
+        ctr_home, ctr_suggested, intro_retention_30s, avg_view_duration,
+        first_major_dropoff
+    Fields that are not available via the public API are returned as None and
+    the template shows 'n/a'.
+    """
+    rows = get_all_analytics_for_job(job_id, platform='youtube')
+    metrics = {
+        'ctr_home': None,
+        'ctr_suggested': None,
+        'intro_retention_30s': None,
+        'avg_view_duration': None,
+        'first_major_dropoff_seconds': None,
+        'views': None,
+        'pulled_at': None,
+    }
+    if not rows:
+        return metrics
+    latest = rows[0]
+    metrics['ctr_home'] = latest.get('ctr')
+    metrics['ctr_suggested'] = None  # not exposed by public API
+    # avg_view_percentage at 0-100; treat as proxy for intro retention.
+    metrics['intro_retention_30s'] = latest.get('avg_view_percentage')
+    metrics['avg_view_duration'] = latest.get('avg_view_duration')
+    metrics['views'] = latest.get('views')
+    metrics['pulled_at'] = latest.get('pulled_at')
+    return metrics
+
+
+@app.route('/reviews')
+def reviews_page():
+    """List jobs awaiting their 48h post-upload review."""
+    channel = request.args.get('channel') or session.get('active_channel')
+    rows = get_reviews_due(channel_id=channel)
+    rows_decorated = []
+    for r in rows:
+        m = _collect_review_metrics(r['id'])
+        rows_decorated.append({
+            'job':     r,
+            'metrics': m,
+        })
+    return render_template(
+        'reviews.html',
+        rows=rows_decorated,
+        active='reviews',
+        active_channel=channel,
+    )
+
+
+@app.route('/reviews/<job_id>/mark-complete', methods=['POST'])
+def mark_review_complete(job_id):
+    """Set review_completed_at = now and store iteration_note."""
+    note = ''
+    if request.is_json:
+        note = (request.json.get('iteration_note') or '').strip()
+    else:
+        note = (request.form.get('iteration_note') or '').strip()
+    mark_review_completed(job_id, note)
+    return jsonify({'ok': True, 'job_id': job_id, 'iteration_note': note})
 
 
 @app.route('/health')

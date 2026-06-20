@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Overview — VideoForge</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        :root {
+            --bg:      #0b1120;
+            --surface: #111827;
+            --card:    #1a2235;
+            --border:  #263148;
+            --muted:   #4b5a72;
+        }
+        body        { background: var(--bg); }
+        .sidebar    { background: #0d1526; border-right: 1px solid var(--border); }
+        .card       { background: var(--card); border: 1px solid var(--border); }
+        .badge      { display: inline-flex; align-items: center; padding: 2px 8px;
+                      border-radius: 9999px; font-size: 11px; font-weight: 600; letter-spacing: .03em; }
+
+        /* status badge colours */
+        .badge-gray   { background: #1f2937; color: #9ca3af; }
+        .badge-blue   { background: #1e3a5f; color: #60a5fa; }
+        .badge-amber  { background: #431407; color: #fbbf24; }
+        .badge-purple { background: #2e1065; color: #c084fc; }
+        .badge-green  { background: #052e16; color: #4ade80; }
+        .badge-red    { background: #450a0a; color: #f87171; }
+
+        /* stage dot colours */
+        .dot-pending  { background: #374151; }
+        .dot-running  { background: #3b82f6; animation: pulse 1.5s infinite; }
+        .dot-done     { background: #22c55e; }
+        .dot-skipped  { background: #6b7280; }
+        .dot-failed   { background: #ef4444; }
+
+        /* log line colours */
+        .log-debug    { color: #4b5a72; }
+        .log-info     { color: #60a5fa; }
+        .log-warning  { color: #fbbf24; }
+        .log-error    { color: #f87171; }
+
+        /* nav link */
+        .nav-link {
+            display: flex; align-items: center; gap: 8px;
+            padding: 6px 8px; border-radius: 6px;
+            color: #6b7280; margin-bottom: 2px;
+            font-size: 13px; text-decoration: none;
+            transition: background .12s, color .12s;
+        }
+        .nav-link:hover { background: #1a2235; color: #e2e8f0; }
+        .nav-link.active { background: #1e3a5f; color: #60a5fa; }
+        .nav-link svg   { flex-shrink: 0; }
+
+        /* form inputs */
+        .inp {
+            background: #0d1526; border: 1px solid var(--border);
+            border-radius: 6px; color: #e2e8f0; font-size: 13px;
+            padding: 6px 10px; outline: none; width: 100%;
+        }
+        .inp:focus { border-color: #3b82f6; }
+        select.inp option { background: #0d1526; }
+
+        /* buttons */
+        .btn { display: inline-flex; align-items: center; gap: 6px;
+               padding: 7px 14px; border-radius: 6px; font-size: 13px;
+               font-weight: 500; cursor: pointer; transition: opacity .12s;
+               border: none; text-decoration: none; }
+        .btn:hover { opacity: .85; }
+        .btn-primary  { background: #2563eb; color: #fff; }
+        .btn-success  { background: #16a34a; color: #fff; }
+        .btn-danger   { background: #dc2626; color: #fff; }
+        .btn-warning  { background: #d97706; color: #fff; }
+        .btn-ghost    { background: #1a2235; color: #9ca3af; border: 1px solid var(--border); }
+
+        /* table */
+        .tbl th { color: #6b7280; font-size: 11px; text-transform: uppercase;
+                  letter-spacing: .06em; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+        .tbl td { padding: 10px 12px; border-bottom: 1px solid #161e2e; font-size: 13px; }
+        .tbl tr:hover td { background: #1a2235; }
+        .tbl tr:last-child td { border-bottom: none; }
+
+        textarea { resize: vertical; }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50%       { opacity: .4; }
+        }
+
+        /* scrollbar */
+        ::-webkit-scrollbar       { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #263148; border-radius: 3px; }
+    </style>
+</head>
+<body class="h-full text-slate-200 text-sm antialiased">
+
+<!-- ===== Sidebar ===== -->
+<aside class="sidebar fixed top-0 left-0 h-full w-56 flex flex-col z-20">
+    <!-- Logo -->
+    <div class="px-4 py-4 border-b" style="border-color: var(--border)">
+        <div class="text-blue-400 font-bold text-sm leading-tight">VideoForge</div>
+        <div class="text-xs mt-0.5" style="color: var(--muted)">The Engineering Brief</div>
+    </div>
+
+    <!-- Nav -->
+    <nav class="flex-1 overflow-y-auto px-3 py-4 space-y-0.5">
+        <p class="nav-section">Main</p>
+        <a href="/"         class="nav-link active">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+            Overview
+        </a>
+        <a href="/jobs"     class="nav-link ">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+            Job queue
+        </a>
+        <a href="/jobs/new" class="nav-link ">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+            New job
+        </a>
+
+        <p class="nav-section mt-4">Tools</p>
+        <a href="/config"   class="nav-link ">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            Config editor
+        </a>
+        <a href="/prompts"  class="nav-link ">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            Prompt editor
+        </a>
+        <a href="/logs"     class="nav-link ">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"/></svg>
+            Log viewer
+        </a>
+
+        <p class="nav-section mt-4">Research</p>
+        <a href="/research/trends" class="nav-link ">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
+            Trend scanner
+        </a>
+        <a href="/research/topics" class="nav-link ">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+            Topic bank
+        </a>
+
+        <p class="nav-section mt-4">Insights</p>
+        <a href="/analytics" class="nav-link ">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+            Analytics
+        </a>
+        <a href="/health"   class="nav-link ">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            API health
+        </a>
+    </nav>
+
+    <!-- Version -->
+    <div class="px-4 py-3" style="border-top:1px solid var(--border); color: var(--muted); font-size:11px">
+        VideoForge v1.0
+    </div>
+</aside>
+
+<!-- ===== Main ===== -->
+<div class="ml-56 min-h-screen flex flex-col">
+    <!-- Flash messages -->
+    
+
+    <main class="flex-1 p-6">
+        
+
+<!-- Priority Alert banner -->
+
+
+
+<script>
+function selectAngle(alertId, el) {
+    // Clear selection in this alert's group
+    document.querySelectorAll(`#angles-${alertId} .angle-card`).forEach(c => {
+        c.style.borderColor = c.closest('[id^="angles-"]').dataset.border || '';
+        c.style.background  = 'rgba(0,0,0,.2)';
+    });
+    // Highlight chosen card
+    el.style.borderColor = '#f59e0b';
+    el.style.background  = 'rgba(245,158,11,.12)';
+    // Write title into the hidden fast-track input
+    const title = el.querySelector('.font-semibold').textContent.trim();
+    document.getElementById(`ft-angle-${alertId}`).value = title;
+}
+</script>
+
+
+<h1 class="text-lg font-semibold text-white mb-5">Overview</h1>
+
+<!-- Stat strip -->
+<div class="grid grid-cols-4 gap-4 mb-6">
+    
+    <div class="card rounded-lg p-4">
+        <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--muted)">Total videos</div>
+        <div class="text-3xl font-bold text-blue-400">2</div>
+    </div>
+    
+    <div class="card rounded-lg p-4">
+        <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--muted)">Posted this week</div>
+        <div class="text-3xl font-bold text-green-400">0</div>
+    </div>
+    
+    <div class="card rounded-lg p-4">
+        <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--muted)">In queue</div>
+        <div class="text-3xl font-bold text-slate-300">0</div>
+    </div>
+    
+    <div class="card rounded-lg p-4">
+        <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--muted)">Awaiting review</div>
+        <div class="text-3xl font-bold text-amber-400">2</div>
+    </div>
+    
+</div>
+
+<div class="grid grid-cols-2 gap-6">
+    <!-- Pipeline status -->
+    <div class="card rounded-lg p-5">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="font-semibold text-white text-sm">Pipeline status</h2>
+            <span id="ps-job-badge" class="badge badge-gray text-xs"></span>
+        </div>
+
+        <div id="ps-idle" class="text-center py-6" style="color:var(--muted)">
+            No pipeline running.
+            <a href="/jobs/new" class="text-blue-400 hover:underline ml-1">Start a job</a>
+        </div>
+
+        <div id="ps-running" class="hidden space-y-2">
+            
+            <div class="stage-row flex items-center gap-3 py-1" data-stage="generate-script">
+                <div class="dot w-2.5 h-2.5 rounded-full flex-shrink-0 dot-pending"></div>
+                <span class="stage-label text-sm text-slate-300 w-28 flex-shrink-0">
+                    Script
+                </span>
+                <span class="stage-msg text-xs" style="color:var(--muted)"></span>
+                <span class="stage-elapsed text-xs ml-auto" style="color:var(--muted)"></span>
+            </div>
+            
+            <div class="stage-row flex items-center gap-3 py-1" data-stage="generate-voice">
+                <div class="dot w-2.5 h-2.5 rounded-full flex-shrink-0 dot-pending"></div>
+                <span class="stage-label text-sm text-slate-300 w-28 flex-shrink-0">
+                    Voice
+                </span>
+                <span class="stage-msg text-xs" style="color:var(--muted)"></span>
+                <span class="stage-elapsed text-xs ml-auto" style="color:var(--muted)"></span>
+            </div>
+            
+            <div class="stage-row flex items-center gap-3 py-1" data-stage="generate-images">
+                <div class="dot w-2.5 h-2.5 rounded-full flex-shrink-0 dot-pending"></div>
+                <span class="stage-label text-sm text-slate-300 w-28 flex-shrink-0">
+                    Images
+                </span>
+                <span class="stage-msg text-xs" style="color:var(--muted)"></span>
+                <span class="stage-elapsed text-xs ml-auto" style="color:var(--muted)"></span>
+            </div>
+            
+            <div class="stage-row flex items-center gap-3 py-1" data-stage="assemble">
+                <div class="dot w-2.5 h-2.5 rounded-full flex-shrink-0 dot-pending"></div>
+                <span class="stage-label text-sm text-slate-300 w-28 flex-shrink-0">
+                    Assemble
+                </span>
+                <span class="stage-msg text-xs" style="color:var(--muted)"></span>
+                <span class="stage-elapsed text-xs ml-auto" style="color:var(--muted)"></span>
+            </div>
+            
+            <div class="stage-row flex items-center gap-3 py-1" data-stage="add-captions">
+                <div class="dot w-2.5 h-2.5 rounded-full flex-shrink-0 dot-pending"></div>
+                <span class="stage-label text-sm text-slate-300 w-28 flex-shrink-0">
+                    Captions
+                </span>
+                <span class="stage-msg text-xs" style="color:var(--muted)"></span>
+                <span class="stage-elapsed text-xs ml-auto" style="color:var(--muted)"></span>
+            </div>
+            
+            <div class="stage-row flex items-center gap-3 py-1" data-stage="generate-metadata">
+                <div class="dot w-2.5 h-2.5 rounded-full flex-shrink-0 dot-pending"></div>
+                <span class="stage-label text-sm text-slate-300 w-28 flex-shrink-0">
+                    Metadata
+                </span>
+                <span class="stage-msg text-xs" style="color:var(--muted)"></span>
+                <span class="stage-elapsed text-xs ml-auto" style="color:var(--muted)"></span>
+            </div>
+            
+            <div class="stage-row flex items-center gap-3 py-1" data-stage="generate-thumbnail">
+                <div class="dot w-2.5 h-2.5 rounded-full flex-shrink-0 dot-pending"></div>
+                <span class="stage-label text-sm text-slate-300 w-28 flex-shrink-0">
+                    Thumbnail
+                </span>
+                <span class="stage-msg text-xs" style="color:var(--muted)"></span>
+                <span class="stage-elapsed text-xs ml-auto" style="color:var(--muted)"></span>
+            </div>
+            
+        </div>
+
+        <div id="ps-error" class="hidden mt-3 text-xs text-red-400 bg-red-950 rounded p-2"></div>
+    </div>
+
+    <!-- Review gate -->
+    <div>
+        
+        
+        <div class="card rounded-lg p-5 mb-4">
+            <div class="flex items-center gap-2 mb-3">
+                <span class="badge badge-amber">REVIEW</span>
+                <span class="font-mono text-xs text-slate-400">JOB 002</span>
+            </div>
+            <p class="text-white font-medium mb-1 leading-snug">Why phone chargers get hot</p>
+            <p class="text-xs mb-4" style="color:var(--muted)">
+                vehicle &middot; shocking_fact
+                &middot; 176 words
+                &middot; 56s
+            </p>
+            <div class="flex gap-2">
+                <form action="/jobs/002/approve" method="post">
+                    <button class="btn btn-success text-xs">Approve &amp; upload</button>
+                </form>
+                <form action="/jobs/002/reject" method="post"
+                      onsubmit="return confirm('Reject job 002? All output files will be deleted and it will requeue from scratch.')">
+                    <button class="btn btn-danger text-xs">Reject &amp; redo</button>
+                </form>
+                <a href="/jobs/002" class="btn btn-ghost text-xs">View details</a>
+            </div>
+        </div>
+        
+        <div class="card rounded-lg p-5 mb-4">
+            <div class="flex items-center gap-2 mb-3">
+                <span class="badge badge-amber">REVIEW</span>
+                <span class="font-mono text-xs text-slate-400">JOB 001</span>
+            </div>
+            <p class="text-white font-medium mb-1 leading-snug">The Flaw Hiding in Every Recall</p>
+            <p class="text-xs mb-4" style="color:var(--muted)">
+                flaw &middot; shocking_fact
+                &middot; 176 words
+                &middot; 51s
+            </p>
+            <div class="flex gap-2">
+                <form action="/jobs/001/approve" method="post">
+                    <button class="btn btn-success text-xs">Approve &amp; upload</button>
+                </form>
+                <form action="/jobs/001/reject" method="post"
+                      onsubmit="return confirm('Reject job 001? All output files will be deleted and it will requeue from scratch.')">
+                    <button class="btn btn-danger text-xs">Reject &amp; redo</button>
+                </form>
+                <a href="/jobs/001" class="btn btn-ghost text-xs">View details</a>
+            </div>
+        </div>
+        
+        
+    </div>
+</div>
+
+    </main>
+</div>
+
+<style>
+.nav-section {
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted); padding: 0 8px 4px;
+}
+</style>
+
+
+<script>
+const STAGE_ORDER = ['generate-script','generate-voice','generate-images','assemble',
+                     'add-captions','generate-metadata','generate-thumbnail'];
+let pollTimer = null;
+
+function dotClass(status) {
+    return { pending:'dot-pending', running:'dot-running', done:'dot-done',
+             skipped:'dot-skipped', failed:'dot-failed' }[status] || 'dot-pending';
+}
+
+async function pollStatus() {
+    try {
+        const res = await fetch('/api/pipeline-status');
+        const data = await res.json();
+
+        const idleEl    = document.getElementById('ps-idle');
+        const runningEl = document.getElementById('ps-running');
+        const errEl     = document.getElementById('ps-error');
+        const badge     = document.getElementById('ps-job-badge');
+
+        const anyActivity = data.running || (data.job_id && data.stages &&
+            Object.values(data.stages).some(s => s.status !== 'pending'));
+
+        if (anyActivity) {
+            idleEl.classList.add('hidden');
+            runningEl.classList.remove('hidden');
+            badge.textContent = data.job_id ? `JOB ${data.job_id}` : '';
+            badge.className = `badge ${data.running ? 'badge-blue' : 'badge-gray'} text-xs`;
+
+            data.stages.forEach(s => {
+                const row = document.querySelector(`.stage-row[data-stage="${s.name}"]`);
+                if (!row) return;
+                const dot = row.querySelector('.dot');
+                dot.className = `dot w-2.5 h-2.5 rounded-full flex-shrink-0 ${dotClass(s.status)}`;
+                row.querySelector('.stage-msg').textContent = s.message || '';
+                row.querySelector('.stage-elapsed').textContent = s.elapsed ? `${s.elapsed}s` : '';
+            });
+
+            if (data.error) {
+                errEl.textContent = `Error: ${data.error}`;
+                errEl.classList.remove('hidden');
+            } else {
+                errEl.classList.add('hidden');
+            }
+        } else {
+            idleEl.classList.remove('hidden');
+            runningEl.classList.add('hidden');
+            badge.textContent = '';
+        }
+    } catch(e) { /* silent */ }
+}
+
+pollStatus();
+setInterval(pollStatus, 5000);
+</script>
+
+</body>
+</html>

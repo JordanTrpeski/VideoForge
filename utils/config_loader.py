@@ -95,7 +95,8 @@ def load_channel_config(channel_slug: str) -> dict:
     prompt_mappings = [
         ('script_prompt.txt',          ('script',   'prompt_file')),
         ('metadata_prompt.txt',        ('metadata', 'prompt_file')),
-        ('reddit_rewrite_prompt.txt',  ('script',   'reddit_prompt_file')),
+        ('reddit_generation_prompt.txt', ('script',   'reddit_prompt_file')),
+        ('reddit_rewrite_prompt.txt',    ('script',   'reddit_prompt_file')),
     ]
     for filename, (section, key) in prompt_mappings:
         candidate = prompts_dir / filename

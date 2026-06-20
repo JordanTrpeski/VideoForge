@@ -1,0 +1,25 @@
+{
+  "channel": {
+    "name": "Dark Psychology",
+    "handle": "",
+    "niche": "dark_psychology_philosophy",
+    "platforms": ["youtube", "tiktok", "youtube_shorts"],
+    "target_length_seconds": 720
+  },
+  "pipeline": {
+    "visual_mode": "images",
+    "renderer": "ffmpeg",
+    "long_form_max_seconds": 10800
+  },
+  "audio": {
+    "loudness_target_lufs": -14
+  },
+  "voice": {
+    "provider": "kokoro",
+    "kokoro_voice": "am_michael",
+    "target_wpm": 165
+  },
+  "thumbnail": {
+    "mode": "frame_capture"
+  }
+}

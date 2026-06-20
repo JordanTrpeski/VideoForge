@@ -1,0 +1,104 @@
+{% extends 'base.html' %}
+{% block title %}48-hour Reviews{% endblock %}
+{% block content %}
+<div class="page">
+  <div class="page-header">
+    <h1>Post-upload Reviews <span class="muted">(48h window)</span></h1>
+    <p class="muted">
+      Videos past their 48-hour mark since upload that still need a review.
+      Use the metrics below to capture an iteration note before marking them
+      complete.
+    </p>
+  </div>
+
+  {% if not rows %}
+    <div class="card">
+      <p class="muted">No reviews currently due.</p>
+    </div>
+  {% else %}
+    {% for entry in rows %}
+      {% set job = entry.job %}
+      {% set m = entry.metrics %}
+      <div class="card" data-job-id="{{ job.id }}">
+        <div class="flex-row">
+          <div>
+            <h3>
+              <a href="/jobs/{{ job.id }}">#{{ job.id }} — {{ job.topic }}</a>
+            </h3>
+            <p class="muted">
+              Channel: {{ job.channel_id or '—' }} ·
+              Uploaded:
+              {% if job.updated_at %}{{ job.updated_at }}{% else %}—{% endif %} ·
+              Due:
+              {% if job.review_due_at %}{{ job.review_due_at }}{% else %}—{% endif %}
+            </p>
+          </div>
+        </div>
+
+        <div class="metric-grid" style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-top:12px">
+          <div class="metric">
+            <div class="metric-label">CTR — Home</div>
+            <div class="metric-value">
+              {% if m.ctr_home is not none %}{{ (m.ctr_home * 100) | round(2) }}%{% else %}n/a{% endif %}
+            </div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">CTR — Suggested</div>
+            <div class="metric-value">
+              {% if m.ctr_suggested is not none %}{{ (m.ctr_suggested * 100) | round(2) }}%{% else %}n/a{% endif %}
+            </div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Intro retention @ 30s</div>
+            <div class="metric-value">
+              {% if m.intro_retention_30s is not none %}{{ m.intro_retention_30s | round(1) }}%{% else %}n/a{% endif %}
+            </div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Avg view duration</div>
+            <div class="metric-value">
+              {% if m.avg_view_duration is not none %}{{ m.avg_view_duration | round(1) }}s{% else %}n/a{% endif %}
+            </div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">First major drop-off</div>
+            <div class="metric-value">
+              {% if m.first_major_dropoff_seconds is not none %}{{ m.first_major_dropoff_seconds | round(1) }}s{% else %}n/a{% endif %}
+            </div>
+          </div>
+        </div>
+
+        <form class="mark-review-form" data-job-id="{{ job.id }}" style="margin-top:16px">
+          <textarea name="iteration_note" rows="2"
+                    placeholder="Iteration note (what to change next time)"
+                    style="width:100%"></textarea>
+          <button type="submit" class="btn btn-primary" style="margin-top:8px">
+            Mark reviewed
+          </button>
+        </form>
+      </div>
+    {% endfor %}
+  {% endif %}
+</div>
+
+<script>
+document.querySelectorAll('.mark-review-form').forEach((form) => {
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const jobId = form.dataset.jobId;
+    const note  = form.querySelector('textarea[name=iteration_note]').value;
+    const res   = await fetch(`/reviews/${jobId}/mark-complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ iteration_note: note }),
+    });
+    if (res.ok) {
+      form.closest('.card').style.opacity = 0.4;
+      const btn = form.querySelector('button');
+      btn.textContent = 'Reviewed ✓';
+      btn.disabled = true;
+    }
+  });
+});
+</script>
+{% endblock %}

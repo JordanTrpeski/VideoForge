@@ -44,6 +44,29 @@ REQUIRED_METADATA_KEYS = {
     'tiktok_hashtags', 'youtube_tags', 'thumbnail_text',
 }
 
+# Phase 14 Block 2 — banned terms in titles + thumbnail text.
+BANNED_METADATA_TERMS = (
+    'rape', 'murdered', 'suicide', 'minor', 'pregnant teen',
+)
+
+
+def _enforce_metadata_guardrails(data: dict, job_id: str) -> None:
+    """
+    Raise ValueError if any title / thumbnail text field contains a banned
+    term. Caller catches and triggers regeneration.
+    """
+    fields = (
+        'tiktok_title', 'youtube_title', 'thumbnail_text',
+    )
+    for f in fields:
+        value = (data.get(f) or '').lower()
+        for banned in BANNED_METADATA_TERMS:
+            if banned in value:
+                raise ValueError(
+                    f"Banned term '{banned}' in metadata field '{f}' "
+                    f"({data.get(f)!r}) — regenerate"
+                )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -160,6 +183,9 @@ def _parse_metadata_response(raw_text: str, job_id: str) -> dict:
         raise ValueError("tiktok_hashtags must be a JSON array")
     if not isinstance(data['youtube_tags'], list):
         raise ValueError("youtube_tags must be a JSON array")
+
+    # Phase 14 Block 2 — banned-term guardrails on titles / thumbnail text
+    _enforce_metadata_guardrails(data, job_id)
 
     return data
 

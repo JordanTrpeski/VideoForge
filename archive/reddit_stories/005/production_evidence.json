@@ -1,0 +1,39 @@
+{
+  "job_id": "005",
+  "channel": "reddit_stories",
+  "video_kind": "long",
+  "story_premise": "TEST production_evidence — premise text",
+  "emotional_lane": "betrayal_revenge",
+  "subgenre_chosen": "family_inheritance_property",
+  "script_origin": "ai_generated_original",
+  "claude_model_used": "claude-sonnet-4-6",
+  "claude_prompt_version": "phase_14_v1",
+  "narration_voice_id": "af_heart",
+  "narration_provider": "kokoro",
+  "narration_target_wpm": 190,
+  "visual_mode": "background_loop",
+  "background_clip_used": null,
+  "primary_title": "My sister had the key the whole time",
+  "title_alternates": [
+    "T2",
+    "T3"
+  ],
+  "primary_thumbnail_text": "KEY ALREADY GONE",
+  "thumbnail_text_alternates": [
+    "TT2",
+    "TT3"
+  ],
+  "primary_thumbnail_path": "output/thumbnails/005_symbolic_v1.jpg",
+  "primary_thumbnail_variant_id": 1,
+  "symbolic_object": "inheritance envelope",
+  "hook_chosen": "calm_countermove",
+  "length_seconds": 1620.0,
+  "loudness_lufs": -14.0,
+  "ai_disclosure_set": true,
+  "renderer_used": "ffmpeg",
+  "render_command": "ffmpeg -y -i bg.mp4 -i audio.wav ...",
+  "upload_url_youtube": "https://youtu.be/abc",
+  "upload_url_tiktok": null,
+  "upload_url_instagram": null,
+  "upload_timestamp": "2026-06-20T03:22:35Z"
+}

@@ -392,6 +392,8 @@ def update_job_field(job_id: str, field: str, value) -> None:
         # Phase 13 — templates / cloud preview
         'template_id', 'template_name', 'preview_url', 'preview_thumb_url',
         'preview_uploaded_at', 'preview_deleted_at',
+        # Phase 14 Block 6 — 48h review tracking
+        'review_due_at', 'review_completed_at', 'iteration_note',
     }
     if field not in allowed_fields:
         raise ValueError(f"Field '{field}' is not an allowed job column")
@@ -1020,6 +1022,10 @@ def _run_migrations() -> None:
         "ALTER TABLE jobs ADD COLUMN preview_thumb_url TEXT",
         "ALTER TABLE jobs ADD COLUMN preview_uploaded_at TEXT",
         "ALTER TABLE jobs ADD COLUMN preview_deleted_at TEXT",
+        # Phase 14 Block 6 — 48h post-upload review tracking
+        "ALTER TABLE jobs ADD COLUMN review_due_at TEXT",
+        "ALTER TABLE jobs ADD COLUMN review_completed_at TEXT",
+        "ALTER TABLE jobs ADD COLUMN iteration_note TEXT",
     ]
     conn = get_connection()
     try:
@@ -2100,6 +2106,74 @@ def get_r2_objects_for_job(job_id: str) -> list:
         rows = conn.execute(
             "SELECT * FROM r2_objects WHERE job_id = ? ORDER BY uploaded_at DESC",
             (job_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 Block 6 — Post-upload review tracking
+# ---------------------------------------------------------------------------
+
+def set_review_due_at(job_id: str, when_iso: str) -> None:
+    """Stamp jobs.review_due_at on a row (called on successful upload)."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE jobs SET review_due_at = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (when_iso, job_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_review_completed(job_id: str, iteration_note: str = '') -> None:
+    """
+    Set review_completed_at = now and store the optional iteration_note.
+    """
+    conn = get_connection()
+    try:
+        conn.execute(
+            """UPDATE jobs
+                  SET review_completed_at = datetime('now'),
+                      iteration_note = ?,
+                      updated_at = datetime('now')
+                WHERE id = ?""",
+            (iteration_note or '', job_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_reviews_due(channel_id: Optional[str] = None) -> list:
+    """
+    Return jobs where review_due_at <= now and review_completed_at IS NULL.
+
+    Args:
+        channel_id (str): Optional channel filter.
+
+    Returns:
+        list[dict]: Job rows, oldest review_due_at first.
+    """
+    conn = get_connection()
+    try:
+        params: list = []
+        ch_clause = ""
+        if channel_id:
+            ch_clause = " AND channel_id = ?"
+            params.append(channel_id)
+        rows = conn.execute(
+            f"""SELECT * FROM jobs
+                  WHERE review_due_at IS NOT NULL
+                    AND review_due_at <= datetime('now')
+                    AND review_completed_at IS NULL
+                    {ch_clause}
+               ORDER BY review_due_at ASC""",
+            params,
         ).fetchall()
         return [dict(r) for r in rows]
     finally:

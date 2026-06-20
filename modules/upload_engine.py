@@ -862,6 +862,197 @@ def archive_job_files(job_id: str, channel_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase 14 Block 5 — Production evidence metadata log
+# ---------------------------------------------------------------------------
+
+def _set_review_due_at(job_id: str) -> None:
+    """
+    Phase 14 Block 6 — stamp jobs.review_due_at = now + 48h on the row.
+    Wrapped so the upload flow can call it without import side effects.
+    """
+    from datetime import datetime, timedelta, timezone
+    from database import set_review_due_at as _db_set
+    try:
+        when = (datetime.now(timezone.utc) + timedelta(hours=48)).strftime(
+            '%Y-%m-%d %H:%M:%S'
+        )
+        _db_set(job_id, when)
+    except Exception as e:
+        logger.warning(
+            f"[JOB {job_id}] set_review_due_at failed (non-fatal): {e}"
+        )
+
+
+def write_production_evidence(
+    job_id: str,
+    channel_id: str,
+    config: dict,
+    youtube_url: str | None,
+    tiktok_url: str | None,
+    instagram_url: str | None,
+) -> Path | None:
+    """
+    Write archive/<channel>/<job_id>/production_evidence.json capturing every
+    production decision needed for YPP review preparedness. Failures are
+    logged but never raised — the upload itself must not be blocked.
+
+    Returns:
+        Path | None: Path to the written file, or None on failure.
+    """
+    from datetime import datetime, timezone
+    try:
+        archive_dir = Path(f'archive/{channel_id}/{job_id}')
+        archive_dir.mkdir(parents=True, exist_ok=True)
+
+        job = get_job(job_id) or {}
+
+        # Pull script + metadata sidecars if present
+        script_data = {}
+        sp = Path(f'output/scripts/{job_id}.json')
+        if sp.exists():
+            try:
+                script_data = json.loads(sp.read_text(encoding='utf-8'))
+            except Exception:
+                pass
+        meta_data = {}
+        mp = Path(f'output/metadata/{job_id}.json')
+        if mp.exists():
+            try:
+                meta_data = json.loads(mp.read_text(encoding='utf-8'))
+            except Exception:
+                pass
+
+        # Renderer sidecar (Block 1 emits this when FFmpeg is used)
+        render_meta = {}
+        rmp = Path(f'output/render_meta/{job_id}.json')
+        if rmp.exists():
+            try:
+                render_meta = json.loads(rmp.read_text(encoding='utf-8'))
+            except Exception:
+                pass
+        # Determine renderer (ffmpeg vs moviepy) from the channel config or sidecar
+        renderer_used = (
+            render_meta.get('renderer_used')
+            or config.get('pipeline', {}).get('renderer', 'moviepy')
+        )
+
+        # Determine video_kind: 'short' if duration < 90s or story_role == short
+        duration = job.get('duration_seconds') or render_meta.get('duration_seconds')
+        story_role = (job.get('story_role') or '').lower()
+        if story_role == 'short':
+            video_kind = 'short'
+        elif duration and duration < 90:
+            video_kind = 'short'
+        else:
+            video_kind = 'long'
+
+        # External-manual model record (Block 7 sets this sidecar)
+        ext_model = None
+        ep = Path(f'output/external_model/{job_id}.json')
+        if ep.exists():
+            try:
+                ext_model = json.loads(ep.read_text(encoding='utf-8'))
+            except Exception:
+                ext_model = None
+
+        # Visual mode + background clip used (FFmpeg sidecar carries format spec
+        # too, which is informative)
+        visual_mode = config.get('pipeline', {}).get('visual_mode', 'images')
+        bg_clip_used = None
+        # Best-effort: scan render_meta sidecar for the background path
+        cmd = render_meta.get('command') or ''
+        # The command sidecar from ffmpeg_renderer currently stores '' but we
+        # leave the slot open.
+
+        title_alternates = (
+            script_data.get('title_alternates')
+            or [meta_data.get('youtube_title')]
+            or []
+        )
+        primary_title = (
+            script_data.get('primary_title')
+            or meta_data.get('youtube_title')
+            or job.get('topic')
+            or ''
+        )
+        primary_thumb_text = (
+            script_data.get('primary_thumbnail_text')
+            or meta_data.get('thumbnail_text')
+            or ''
+        )
+        thumb_text_alternates = (
+            script_data.get('thumbnail_text_alternates')
+            or []
+        )
+
+        voice_cfg = config.get('voice', {}) or {}
+        narration_provider = voice_cfg.get('provider')
+        if narration_provider == 'kokoro':
+            narration_voice_id = voice_cfg.get('kokoro_voice')
+        elif narration_provider == 'openai':
+            narration_voice_id = voice_cfg.get('openai_voice')
+        else:
+            narration_voice_id = voice_cfg.get('voice_id')
+
+        payload = {
+            'job_id':                       job_id,
+            'channel':                      channel_id,
+            'video_kind':                   video_kind,
+            'story_premise':                job.get('topic') or '',
+            'emotional_lane':               config.get('content', {}).get('emotional_lane'),
+            'subgenre_chosen':              script_data.get('subgenre_chosen'),
+            'script_origin':                (
+                'external_manual' if ext_model
+                else 'ai_generated_original'
+            ),
+            'claude_model_used':            (
+                ext_model.get('reported_model') if ext_model
+                else config.get('script', {}).get('model')
+            ),
+            'claude_prompt_version':        'phase_14_v1',
+            'narration_voice_id':           narration_voice_id,
+            'narration_provider':           narration_provider,
+            'narration_target_wpm':         voice_cfg.get('target_wpm'),
+            'visual_mode':                  visual_mode,
+            'background_clip_used':         bg_clip_used,
+            'primary_title':                primary_title,
+            'title_alternates':             list(title_alternates),
+            'primary_thumbnail_text':       primary_thumb_text,
+            'thumbnail_text_alternates':    list(thumb_text_alternates),
+            'primary_thumbnail_path':       job.get('thumbnail_path'),
+            'primary_thumbnail_variant_id': job.get('thumbnail_variant'),
+            'symbolic_object':              script_data.get('symbolic_object'),
+            'hook_chosen':                  job.get('picked_hook_style') or job.get('hook_style'),
+            'length_seconds':               duration,
+            'loudness_lufs':                render_meta.get('loudness_target_lufs')
+                                            or (config.get('audio') or {}).get('loudness_target_lufs'),
+            'ai_disclosure_set':            True,
+            'renderer_used':                renderer_used,
+            'render_command':               cmd or None,
+            'upload_url_youtube':           youtube_url,
+            'upload_url_tiktok':            tiktok_url,
+            'upload_url_instagram':         instagram_url,
+            'upload_timestamp':             datetime.now(timezone.utc).strftime(
+                '%Y-%m-%dT%H:%M:%SZ'
+            ),
+        }
+
+        out_path = archive_dir / 'production_evidence.json'
+        with open(out_path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        logger.info(
+            f"[JOB {job_id}] Production evidence written: {out_path}"
+        )
+        return out_path
+    except Exception as e:
+        logger.warning(
+            f"[JOB {job_id}] write_production_evidence failed (non-fatal): {e}",
+            exc_info=True,
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Phase 13 Block D — cross-platform fan-out for teaser shorts
 # ---------------------------------------------------------------------------
 
@@ -1215,6 +1406,30 @@ def upload_video(job_id: str, config: dict) -> dict:
                 archive_job_files(job_id, channel_id)
             except Exception as e:
                 logger.warning(f"[JOB {job_id}] Archive failed (non-fatal): {e}")
+            # Phase 14 Block 5 — production_evidence.json (must never raise)
+            try:
+                channel_id = config.get('_channel', {}).get(
+                    'id',
+                    config.get('default_channel', 'engineering_brief'),
+                )
+                yt_url = youtube_result.get('url') if youtube_result.get('success') else None
+                tt_url = tiktok_result.get('url') if tiktok_result.get('success') else None
+                ig_url = None  # Instagram path may set this via cross-platform fan-out later
+                # Phase 14 Block 5 — Phase 14 Block 6 review window
+                _set_review_due_at(job_id)
+                write_production_evidence(
+                    job_id=job_id,
+                    channel_id=channel_id,
+                    config=config,
+                    youtube_url=yt_url,
+                    tiktok_url=tt_url,
+                    instagram_url=ig_url,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[JOB {job_id}] production_evidence write failed "
+                    f"(non-fatal): {e}"
+                )
         else:
             # All platforms skipped — leave status unchanged (still at review)
             logger.info(

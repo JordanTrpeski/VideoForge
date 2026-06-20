@@ -45,7 +45,12 @@
     ]
   },
   "pipeline": {
-    "visual_mode": "images"
+    "visual_mode": "images",
+    "renderer": "moviepy",
+    "long_form_max_seconds": 10800
+  },
+  "audio": {
+    "loudness_target_lufs": -14
   },
   "reddit": {
     "default_subs": [
@@ -124,7 +129,7 @@
     "max_tokens": 4096,
     "model": "claude-sonnet-4-6",
     "prompt_file": "prompts/script_prompt.txt",
-    "reddit_prompt_file": "prompts/reddit_rewrite_prompt.txt",
+    "reddit_prompt_file": "prompts/reddit_generation_prompt.txt",
     "temperature": 0.7,
     "word_count_target": 175
   },
@@ -197,13 +202,15 @@
       ]
     },
     "reddit_long_form": {
-      "length_targets_seconds": [480, 600, 720],
+      "length_targets_seconds": [1440, 1560, 1680, 1800, 1920],
+      "occasional_long_targets_seconds": [2400, 2760, 3000, 3360],
+      "occasional_long_probability": 0.20,
       "hook_styles": [
-        "shocking_revelation",
-        "relatable_mistake",
-        "unexpected_twist",
-        "dramatic_opening",
-        "moral_dilemma"
+        "betrayal_revenge_irreversible",
+        "calm_countermove",
+        "evidence_unfolding",
+        "loyalty_broken",
+        "inheritance_pivot"
       ]
     }
   },

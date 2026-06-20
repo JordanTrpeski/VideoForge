@@ -328,6 +328,69 @@
     {% endif %}
 </div>
 
+<!-- Phase 14 Block 7 — Export prompt / Import external script -->
+<div id="external-model" class="card rounded-lg p-5 mb-5">
+    <h2 class="font-semibold text-white text-sm mb-2">External model escalation</h2>
+    <p class="text-xs text-slate-400 mb-3">
+        Paste this prompt into Claude.ai (Opus 4.7) or ChatGPT (GPT-5 Pro),
+        copy the JSON response back here, and the job advances as if the API
+        had generated it.
+    </p>
+    <div class="flex gap-2 mb-3">
+        <button type="button" class="btn btn-ghost text-xs" id="copy-prompt-btn">
+            Copy prompt to clipboard
+        </button>
+        <span class="text-xs text-slate-500 self-center" id="copy-prompt-status"></span>
+    </div>
+    <label class="text-xs text-slate-400 block mb-1">Reported model</label>
+    <input type="text" id="reported-model"
+           placeholder="e.g. claude-opus-4.7-browser or gpt-5-pro"
+           class="inp text-xs w-full mb-2"/>
+    <label class="text-xs text-slate-400 block mb-1">Paste JSON response</label>
+    <textarea id="external-script-json" rows="8"
+              class="inp text-xs w-full font-mono leading-relaxed"
+              placeholder='{ "topic": "...", "primary_title": "...", ... }'></textarea>
+    <div class="flex gap-2 mt-3">
+        <button type="button" class="btn btn-success text-xs" id="import-script-btn">
+            Import script JSON
+        </button>
+        <span class="text-xs text-slate-500 self-center" id="import-status"></span>
+    </div>
+</div>
+<script>
+(function(){
+  const jobId = "{{ job.id }}";
+  const copyBtn = document.getElementById('copy-prompt-btn');
+  if (copyBtn) copyBtn.addEventListener('click', async () => {
+    const status = document.getElementById('copy-prompt-status');
+    status.textContent = 'fetching prompt…';
+    const res = await fetch(`/jobs/${jobId}/export-prompt`);
+    if (!res.ok) { status.textContent = 'error: ' + res.status; return; }
+    const data = await res.json();
+    await navigator.clipboard.writeText(data.prompt || '');
+    status.textContent = `copied (${(data.prompt || '').length} chars)`;
+  });
+  const impBtn = document.getElementById('import-script-btn');
+  if (impBtn) impBtn.addEventListener('click', async () => {
+    const status = document.getElementById('import-status');
+    const raw = document.getElementById('external-script-json').value;
+    const reported = document.getElementById('reported-model').value;
+    status.textContent = 'importing…';
+    const res = await fetch(`/jobs/${jobId}/import-script`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ script_json: raw, reported_model: reported }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      status.textContent = `imported → ${data.script_path}`;
+    } else {
+      status.textContent = 'error: ' + (data.error || res.status);
+    }
+  });
+})();
+</script>
+
 <!-- Script editor — hidden until toggled -->
 {% if script_data %}
 <div id="script-editor" class="card rounded-lg p-5 mb-5 hidden">

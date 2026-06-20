@@ -300,9 +300,19 @@ def _tts_kokoro(
     from pydub import AudioSegment
 
     voice = config['voice'].get('kokoro_voice', 'af_heart')
+    # Phase 14 Block 3 — derive Kokoro speed from target_wpm.
+    # Kokoro at speed=1.0 produces ~165 WPM in typical English narration.
+    # speed = target_wpm / 165, clamped to a safe playable range.
+    target_wpm = int(config.get('voice', {}).get('target_wpm', 0) or 0)
+    if target_wpm > 0:
+        speed = target_wpm / 165.0
+        speed = max(0.8, min(1.3, speed))
+    else:
+        speed = 1.0
     logger.info(
         f"[JOB {job_id}] Kokoro TTS (local CPU) — chunk: {chunk_label}, "
-        f"voice: {voice}, chars: {len(text)}"
+        f"voice: {voice}, target_wpm: {target_wpm or '(default)'}, "
+        f"speed: {speed:.3f}, chars: {len(text)}"
     )
 
     t0 = time.time()
@@ -312,7 +322,7 @@ def _tts_kokoro(
     segments = []
     sample_rate = 24000
 
-    for _, _, audio in pipeline(text, voice=voice, speed=1.0):
+    for _, _, audio in pipeline(text, voice=voice, speed=speed):
         if audio is not None:
             segments.append(audio)
 
