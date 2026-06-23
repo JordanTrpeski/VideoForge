@@ -33,6 +33,18 @@ OAuth token refresh calls not currently instrumented in
 api_usage. Zero cost impact. Worth adding when infrastructure
 work happens.
 
+## Cleanup deferred from Phase 14
+
+### config_loader.py:99 — stale filename mapping
+`utils/config_loader.py` line 99 maps `reddit_rewrite_prompt.txt` →
+`reddit_prompt_file` as a channel-specific override check. The root
+`prompts/reddit_rewrite_prompt.txt` was removed in the Phase 14
+cleanup commit. The line is harmless (no channel dir has this file)
+but the mapping should be updated to `reddit_generation_prompt.txt`
+to keep the channel-override discovery consistent with the renamed
+file. Low priority — only relevant if a channel prompt dir is
+manually seeded with a file using the old name.
+
 ## Documentation deferred from Phase 13
 
 ### CLAUDE.md refresh

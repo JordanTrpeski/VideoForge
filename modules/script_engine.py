@@ -147,7 +147,7 @@ def _build_reddit_prompt(
     Inject the Reddit story and word-count targets into the rewrite template.
 
     Args:
-        template (str):             Raw reddit_rewrite_prompt.txt with {placeholder} vars.
+        template (str):             Raw reddit_generation_prompt.txt with {placeholder} vars.
         title (str):                Original Reddit post title.
         selftext (str):             Original Reddit post body to be rewritten.
         config (dict):              Loaded config.json contents.
@@ -662,7 +662,7 @@ def generate_script(
       - 'standard' (default): the engineering explainer flow — loads
         prompts/script_prompt.txt and produces narration + 8 image prompts.
         On success, advances the job to 'voiced' so voice generation runs.
-      - 'reddit': the story rewrite flow — loads prompts/reddit_rewrite_prompt.txt,
+      - 'reddit': the story rewrite flow — loads prompts/reddit_generation_prompt.txt,
         injects the job's stored source story (jobs.source_selftext), and
         produces narration + 5 candidate hooks. On success, advances the job to
         'script_done' (a manual gate) so the owner can pick a hook in the
@@ -740,7 +740,7 @@ def generate_script(
 
         # Load and render the prompt for this mode
         if mode == 'reddit':
-            prompt_file = config['script'].get('reddit_prompt_file', 'prompts/reddit_rewrite_prompt.txt')
+            prompt_file = config['script'].get('reddit_prompt_file', 'prompts/reddit_generation_prompt.txt')
             selftext = (job or {}).get('source_selftext') or ''
             if not selftext.strip():
                 raise ValueError(

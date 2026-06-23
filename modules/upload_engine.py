@@ -961,8 +961,6 @@ def write_production_evidence(
         bg_clip_used = None
         # Best-effort: scan render_meta sidecar for the background path
         cmd = render_meta.get('command') or ''
-        # The command sidecar from ffmpeg_renderer currently stores '' but we
-        # leave the slot open.
 
         title_alternates = (
             script_data.get('title_alternates')

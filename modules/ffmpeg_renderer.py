@@ -305,7 +305,7 @@ def _render_with_captions_landscape(
         str(output_path),
     ]
     res = _run(cmd, job_id)
-    return res.returncode, res.stderr
+    return res.returncode, res.stderr, shlex.join(str(c) for c in cmd)
 
 
 def _render_with_captions_portrait(
@@ -347,7 +347,7 @@ def _render_with_captions_portrait(
            '-movflags', '+faststart',
            str(output_path)]
     res = _run(cmd, job_id)
-    return res.returncode, res.stderr
+    return res.returncode, res.stderr, shlex.join(str(c) for c in cmd)
 
 
 def _render_ambient_landscape(
@@ -426,7 +426,7 @@ def _render_ambient_landscape(
         str(output_path),
     ]
     res = _run(cmd, job_id)
-    return res.returncode, res.stderr
+    return res.returncode, res.stderr, shlex.join(str(c) for c in cmd)
 
 
 # ---------------------------------------------------------------------------
@@ -506,15 +506,15 @@ def render_video(
         inputs['voice'] = str(mastered)
 
         if format_spec == 'long_form_16_9_captions':
-            rc, stderr = _render_with_captions_landscape(
+            rc, stderr, last_cmd = _render_with_captions_landscape(
                 job_id, inputs, mastered, out_path, caption_spec,
             )
         elif format_spec == 'short_9_16_captions':
-            rc, stderr = _render_with_captions_portrait(
+            rc, stderr, last_cmd = _render_with_captions_portrait(
                 job_id, inputs, mastered, out_path, caption_spec,
             )
         else:  # long_form_ambient_16_9_no_captions
-            rc, stderr = _render_ambient_landscape(
+            rc, stderr, last_cmd = _render_ambient_landscape(
                 job_id, inputs, mastered, out_path,
             )
 
